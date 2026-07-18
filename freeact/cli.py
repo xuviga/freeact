@@ -85,9 +85,21 @@ def main(
         console.print(f"freeact v{__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
+        _auto_setup_shortcut()
         console.print("[bold cyan]Free Browser Agent CLI[/bold cyan]")
         console.print(f"Version: {__version__}")
         console.print("Run [green]freeact --help[/green] for available commands")
+
+
+def _auto_setup_shortcut():
+    """Create CDP browser shortcut on first run if it doesn't exist."""
+    shortcut = Path.home() / "Desktop" / "Yandex (FreeAct).lnk"
+    if not shortcut.exists():
+        from freeact.live import setup_browser_cdp
+        try:
+            setup_browser_cdp("yandex")
+        except Exception:
+            pass
 
 
 async def _get_page(session_name: str):
