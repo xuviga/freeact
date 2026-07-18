@@ -5,7 +5,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
-[![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)]()
+[![Version](https://img.shields.io/badge/version-0.3.0-orange.svg)]()
 
 FreeAct is a free, open-source CLI that gives AI agents (Claude Code, OpenCode, Cursor, Codex) the ability to control **real installed browsers** — Chrome, Yandex, Edge — without any automation flags that anti-bot systems can detect.
 
@@ -53,6 +53,29 @@ freeact daemon stop
 ```
 
 ## Features
+
+### Live Browser Mode (v0.3.0) — Control Your Real Browser
+Connect to your already-running browser. All tabs, logins, cookies preserved.
+You see everything the agent does in real-time.
+
+```bash
+freeact connect                     # Auto-detect and connect to your browser
+freeact tabs                        # List all open tabs
+# [0] Wildberries: iPhone 15
+# [1] Dzen: news
+# [2] YouTube: music
+
+freeact tab switch 0                # Switch to Wildberries tab
+freeact tab new https://ozon.ru     # Open a new tab
+freeact tab close 2                 # Close a tab
+
+# Interact with any page in your real browser
+freeact --session live state        # 96 indexed elements from YOUR browser
+freeact --session live click 6      # Click "Login"
+freeact --session live input 2 "text"
+freeact --session live get markdown
+freeact --session live solve-captcha
+```
 
 ### Daemon Mode (v0.2.0)
 Background HTTP server on `127.0.0.1:9341` keeps the browser alive between commands. Commands are instant — no per-command startup delay, JS state preserved.
@@ -114,6 +137,7 @@ freeact forge --name wb-scraper --url https://www.wildberries.ru --desc "WB prod
 | Group | Commands |
 |-------|----------|
 | **Daemon** | `start`, `stop`, `status` |
+| **Live Browser** | `connect`, `tabs`, `tab switch/close/new` |
 | **Browser** | `create`, `open`, `list`, `update`, `delete`, `types` |
 | **Navigation** | `navigate`, `back`, `forward`, `reload` |
 | **Interaction** | `click`, `input`, `hover`, `select`, `keys`, `scroll`, `scrollintoview`, `upload` |
@@ -168,7 +192,8 @@ cp SKILL.md ~/.config/opencode/skills/freeact/SKILL.md
 freeact/
 ├── freeact/
 │   ├── cli.py           # Typer CLI — 35+ commands with daemon routing
-│   ├── daemon.py        # HTTP server (127.0.0.1:9341) for persistent browser
+│   ├── live.py          # Live browser connection (CDP — user's real browser)
+│   ├── daemon.py         # HTTP server (127.0.0.1:9341) for persistent browser
 │   ├── browser.py       # Real browser launch + CDP connection
 │   ├── captcha.py       # Multi-strategy CAPTCHA solver (audio/OCR/behavioral)
 │   ├── session.py       # Session persistence
@@ -200,6 +225,15 @@ freeact/
 | **Profile/cookie check** | Real profile copy with existing cookies |
 
 ## Changelog
+
+### v0.3.0 — Live Browser Mode
+- `connect` — one command to connect to user's running browser (auto-detect Chrome/Yandex/Edge)
+- `tabs` — list all open tabs with titles and URLs
+- `tab switch <N>` — activate a specific tab
+- `tab new <url>` — open a new tab
+- `tab close <N>` — close a tab
+- `--session live` — all commands (state, click, input, get) work on the live browser's active tab
+- Browser stays untouched — all logins, cookies, tabs preserved
 
 ### v0.2.0 — Daemon, CAPTCHA, Remote, Forge
 - Daemon mode: HTTP server on 127.0.0.1:9341 for persistent browser
