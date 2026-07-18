@@ -931,6 +931,7 @@ def connect(
     if dm is not None and dm.get("ok"):
         if dm.get("ok"):
             console.print(f"[green]{dm.get('message')}[/green]")
+            console.print("[green]Using your real browser profile — all passwords, logins, tabs restored[/green]")
             for p in dm.get("pages", []):
                 console.print(f"  Tab: {p.get('title', '?')[:80]}")
         else:

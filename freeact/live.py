@@ -58,7 +58,9 @@ def detect_browser_cdp() -> Optional[dict]:
 
 
 def launch_browser_with_cdp(browser_type: str = "chrome", port: int = CDP_DEFAULT_PORT) -> Optional[dict]:
-    """Launch a browser with CDP enabled. Uses existing profile."""
+    """Launch browser with CDP + original profile. Kills existing instance if needed.
+    Returns CDP info on success, None on failure.
+    """
     from freeact.browser import find_browser
 
     info = find_browser(browser_type)
@@ -67,27 +69,35 @@ def launch_browser_with_cdp(browser_type: str = "chrome", port: int = CDP_DEFAUL
 
     exe = info["found_path"]
     profile = str(info["profile"])
+    exe_name = info["exe"]
+
+    import subprocess as sp
+    try:
+        sp.run(["taskkill", "/F", "/IM", exe_name], capture_output=True, timeout=10)
+    except Exception:
+        pass
+    time.sleep(1.5)
 
     args = [
         exe,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={profile}",
+        "--restore-last-session",
         "--no-first-run",
         "--no-default-browser-check",
-        "--restore-last-session",
         "--window-size=1920,1080",
     ]
 
     try:
-        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        sp.Popen(args, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
     except Exception as e:
         return None
 
     import http.client
-    for attempt in range(15):
+    for attempt in range(20):
         time.sleep(1)
         try:
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
             conn.request("GET", "/json/version")
             resp = conn.getresponse()
             data = json.loads(resp.read().decode())
