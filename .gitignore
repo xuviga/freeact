@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+*.egg
+
+# IDE
+.vscode/
+.idea/
+
+# Project data
+profiles/
+*.log
+
+# Config (local)
+.freeact/
+
+# OS
+.DS_Store
+Thumbs.db
