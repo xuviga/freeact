@@ -190,11 +190,7 @@ class BrowserManager:
             profile_dir = PROFILES_DIR / f"{bc.id}_tmp"
             profile_dir.mkdir(parents=True, exist_ok=True)
         else:
-            src = info["profile"]
-            dst = PROFILES_DIR / bc.id
-            if not dst.exists() or not any(dst.iterdir()):
-                _copy_profile(src, dst)
-            profile_dir = dst
+            profile_dir = info["profile"]
 
         args = [
             info["found_path"],
