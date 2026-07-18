@@ -3,14 +3,14 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "freeact"
-version = "0.1.0"
-description = "Free Browser Agent CLI — open-source browser automation for AI agents"
+name = "freeact-cli"
+version = "0.3.1"
+description = "Free Browser Agent CLI — undetectable browser automation for AI agents. Controls your real browser via CDP."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.12"
 authors = [
-    {name = "FreeAct Team"}
+    {name = "xuviga"}
 ]
 keywords = [
     "browser-automation",
@@ -19,9 +19,15 @@ keywords = [
     "playwright",
     "cli",
     "agent-tools",
+    "anti-bot",
+    "stealth",
+    "cdp",
+    "opencode",
+    "claude-code",
+    "undetectable",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
@@ -53,10 +59,10 @@ dev = [
 freeact = "freeact.cli:main_cli"
 
 [project.urls]
-Homepage = "https://github.com/freeact/freeact"
-Repository = "https://github.com/freeact/freeact"
-Issues = "https://github.com/freeact/freeact/issues"
-Documentation = "https://github.com/freeact/freeact#readme"
+Homepage = "https://github.com/xuviga/freeact"
+Repository = "https://github.com/xuviga/freeact"
+Issues = "https://github.com/xuviga/freeact/issues"
+Documentation = "https://github.com/xuviga/freeact#readme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["freeact"]

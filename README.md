@@ -13,7 +13,7 @@ FreeAct controls **your real browser** — the one you use every day. No new pro
 
 ```bash
 # 1. Install
-pip install freeact
+pip install freeact-cli
 playwright install chromium
 
 # 2. That's it! A shortcut "Yandex (FreeAct)" appears on your desktop.
@@ -149,7 +149,7 @@ freeact/
 ## Installation
 
 ```bash
-pip install freeact
+pip install freeact-cli
 playwright install chromium
 ```
 

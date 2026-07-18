@@ -5,7 +5,7 @@ allowed-tools: Bash(freeact:*, python:*)
 metadata:
   author: FreeAct
   version: "0.3.1"
-  install: "pip install freeact && playwright install chromium"
+  install: "pip install freeact-cli && playwright install chromium"
   homepage: "https://github.com/xuviga/freeact"
   requires:
     runtime: "Python 3.12+, Yandex Browser or Chrome"
