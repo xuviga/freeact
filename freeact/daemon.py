@@ -518,10 +518,7 @@ class DaemonServer:
         return result
 
     async def _cmd_connect(self, body: dict) -> dict:
-        from freeact.live import detect_browser_cdp, launch_browser_with_cdp, connect_to_live_browser
-        browser_type = body.get("browser", "chrome")
-        port = body.get("port", 0)
-
+        from freeact.live import detect_browser_cdp, connect_to_live_browser
         detected = detect_browser_cdp()
         if detected:
             result = await connect_to_live_browser(detected["port"])
@@ -533,23 +530,12 @@ class DaemonServer:
                     "port": detected["port"],
                     "tabs": result.get("tabs", 0),
                     "pages": result.get("pages", []),
-                    "message": f"Connected to running {detected['browser']} on port {detected['port']} — {result.get('tabs', 0)} tabs open",
+                    "message": f"Connected to {detected['browser']} on port {detected['port']} — {result.get('tabs', 0)} tabs",
                 }
-
-        launched = launch_browser_with_cdp(browser_type, port or 9222)
-        if launched:
-            result = await connect_to_live_browser(launched["port"])
-            return {
-                "ok": True,
-                "mode": "launched",
-                "browser": launched["browser"],
-                "port": launched["port"],
-                "tabs": result.get("tabs", 0),
-                "pages": result.get("pages", []),
-                "message": f"Launched {launched['browser']} with CDP on port {launched['port']} — user's full profile loaded",
-            }
-
-        return {"ok": False, "error": "No browser found and couldn't launch one. Install Chrome/Yandex/Edge."}
+        return {
+            "ok": False,
+            "error": "Browser not running with CDP. Run: freeact setup"
+        }
 
     async def _cmd_tabs(self, body: dict) -> dict:
         from freeact.live import list_tabs, get_live_config

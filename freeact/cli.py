@@ -921,41 +921,53 @@ def forge(
 
 @app.command()
 def connect(
-    browser: Optional[str] = typer.Option("chrome", "--browser", "-b", help="Browser: chrome, yandex, edge"),
+    browser: Optional[str] = typer.Option("yandex", "--browser", "-b", help="Browser: yandex, chrome, edge"),
     port: Optional[int] = typer.Option(0, "--port", "-p", help="CDP port (0=auto-detect)"),
 ):
-    """Connect to your REAL running browser. All tabs, logins, cookies preserved."""
-    from freeact.live import detect_browser_cdp, launch_browser_with_cdp, connect_to_live_browser, save_live_config
+    """Connect to your REAL running browser. Does NOT restart — needs browser with CDP enabled."""
+    from freeact.live import detect_browser_cdp, connect_to_live_browser, save_live_config
 
     dm = _daemon_call("/cmd/connect", {"browser": browser, "port": port})
     if dm is not None and dm.get("ok"):
-        if dm.get("ok"):
-            console.print(f"[green]{dm.get('message')}[/green]")
-            console.print("[green]Using your real browser profile — all passwords, logins, tabs restored[/green]")
-            for p in dm.get("pages", []):
-                console.print(f"  Tab: {p.get('title', '?')[:80]}")
-        else:
-            console.print(f"[red]{dm.get('error')}[/red]")
+        console.print(f"[green]{dm.get('message')}[/green]")
+        for p in dm.get("pages", []):
+            console.print(f"  Tab: {p.get('title', '?')[:80]}")
         return
 
     async def _run():
         detected = detect_browser_cdp()
         if detected:
-            result = await connect_to_live_browser(detected["port"])
-            if result.get("ok"):
-                return result
-        launched = launch_browser_with_cdp(browser, port or 9222)
-        if launched:
-            return await connect_to_live_browser(launched["port"])
-        return {"ok": False, "error": "No browser found"}
+            console.print(f"[dim]Found {detected['browser']} on port {detected['port']}[/dim]")
+            return await connect_to_live_browser(detected["port"])
+
+        console.print("[yellow]Browser not running with CDP.[/yellow]")
+        console.print("")
+        console.print("One-time setup (30 seconds):")
+        console.print(f"  [green]freeact setup --browser {browser}[/green]")
+        console.print("")
+        console.print("This creates a 'Yandex (FreeAct)' shortcut on your desktop.")
+        console.print("Use it for daily browsing — freeact connects anytime.")
+        return {"ok": False, "error": "Browser not running with CDP. Run: freeact setup"}
 
     result = asyncio.run(_run())
     if result.get("ok"):
         sm = get_session_manager()
         sm.create("live", "live")
-        console.print(f"[green]Connected![/green] {result.get('tabs', 0)} tabs open")
+        console.print(f"[green]Connected![/green] {result.get('tabs', 0)} tabs — your profile, passwords, everything intact")
         for p in result.get("pages", []):
             console.print(f"  Tab: {p.get('title', '?')[:80]}")
+
+
+@app.command()
+def setup(
+    browser: Optional[str] = typer.Option("yandex", "--browser", "-b", help="Browser: yandex, chrome, edge"),
+    port: Optional[int] = typer.Option(9222, "--port", "-p", help="CDP port"),
+):
+    """Create desktop shortcut: browser with CDP always enabled. One-time setup."""
+    from freeact.live import setup_browser_cdp
+    result = setup_browser_cdp(browser, port or 9222)
+    if result.get("ok"):
+        console.print(f"[green]{result['message']}[/green]")
     else:
         console.print(f"[red]{result.get('error')}[/red]")
 

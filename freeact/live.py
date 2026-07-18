@@ -58,8 +58,8 @@ def detect_browser_cdp() -> Optional[dict]:
 
 
 def launch_browser_with_cdp(browser_type: str = "chrome", port: int = CDP_DEFAULT_PORT) -> Optional[dict]:
-    """Launch browser with CDP + original profile. Kills existing instance if needed.
-    Returns CDP info on success, None on failure.
+    """Launch browser with CDP + original profile. Does NOT kill existing instance.
+    Use when browser is not running at all.
     """
     from freeact.browser import find_browser
 
@@ -69,14 +69,6 @@ def launch_browser_with_cdp(browser_type: str = "chrome", port: int = CDP_DEFAUL
 
     exe = info["found_path"]
     profile = str(info["profile"])
-    exe_name = info["exe"]
-
-    import subprocess as sp
-    try:
-        sp.run(["taskkill", "/F", "/IM", exe_name], capture_output=True, timeout=10)
-    except Exception:
-        pass
-    time.sleep(1.5)
 
     args = [
         exe,
@@ -89,8 +81,8 @@ def launch_browser_with_cdp(browser_type: str = "chrome", port: int = CDP_DEFAUL
     ]
 
     try:
-        sp.Popen(args, stdout=sp.DEVNULL, stderr=sp.DEVNULL)
-    except Exception as e:
+        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
         return None
 
     import http.client
@@ -272,5 +264,57 @@ async def new_tab(port: int, url: str = "about:blank") -> dict:
             "title": data.get("title", ""),
             "cdp_id": data.get("id", ""),
         }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def setup_browser_cdp(browser_type: str = "yandex", port: int = CDP_DEFAULT_PORT) -> dict:
+    """Create a desktop shortcut that launches browser with CDP always enabled.
+    User double-clicks this shortcut for daily browsing, freeact connects anytime.
+    """
+    from freeact.browser import find_browser
+    import os
+
+    info = find_browser(browser_type)
+    if not info:
+        return {"ok": False, "error": f"Browser '{browser_type}' not found. Install it first."}
+
+    exe = info["found_path"]
+    name = info["name"]
+    profile = str(info["profile"])
+
+    desktop = Path.home() / "Desktop"
+    shortcut_path = desktop / f"{name} (FreeAct).lnk"
+
+    import subprocess as sp
+
+    ps_script = f'''
+$WScriptShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WScriptShell.CreateShortcut("{shortcut_path}")
+$Shortcut.TargetPath = "{exe}"
+$Shortcut.Arguments = '--remote-debugging-port={port} --user-data-dir="{profile}" --restore-last-session --no-first-run --no-default-browser-check'
+$Shortcut.WindowStyle = 1
+$Shortcut.IconLocation = "{exe},0"
+$Shortcut.Description = "{name} with FreeAct CDP (port {port}) — agent can connect anytime"
+$Shortcut.Save()
+Write-Output "Shortcut created"
+'''
+
+    try:
+        result = sp.run(
+            ["powershell", "-Command", ps_script],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode == 0:
+            return {
+                "ok": True,
+                "shortcut": str(shortcut_path),
+                "message": (
+                    f"Desktop shortcut created: {name} (FreeAct).lnk\n"
+                    f"Use THIS shortcut for daily browsing.\n"
+                    f"Then run 'freeact connect' anytime — it will connect without restarting."
+                ),
+            }
+        return {"ok": False, "error": result.stderr or "Failed to create shortcut"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
