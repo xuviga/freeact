@@ -53,6 +53,25 @@ def _req_session(ctx: typer.Context, opt: Optional[str] = None) -> str:
     return s
 
 
+def _daemon_call(path: str, body: dict) -> dict | None:
+    """Try daemon first, return None if daemon not running."""
+    try:
+        from freeact.daemon import is_daemon_running, send_daemon_command
+        if is_daemon_running():
+            return send_daemon_command(path, body)
+    except Exception:
+        pass
+    return None
+
+
+def _run_or_daemon(session: str, path: str, body: dict, fallback_fn):
+    """Route to daemon if available, otherwise run locally."""
+    result = _daemon_call(path, {**body, "session": session})
+    if result is not None:
+        return result
+    return asyncio.run(fallback_fn(session))
+
+
 @app.callback(invoke_without_command=True)
 def main(
     ctx: typer.Context,
@@ -121,6 +140,10 @@ def navigate(
     session: Optional[str] = typer.Option(None, "--session", help="Session name"),
 ):
     s = _req_session(ctx, session)
+    dm = _daemon_call("/cmd/navigate", {"session": s, "url": url})
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
 
     async def _run():
         page = await _get_page(s)
@@ -136,7 +159,6 @@ def navigate(
         if sess:
             await manager.save_page_url(sess.browser_id, s, page.url)
         return f"Navigated to {url}"
-
     console.print(asyncio.run(_run()))
 
 
@@ -200,6 +222,11 @@ def state(
 ):
     s = _req_session(ctx, session)
 
+    dm = _daemon_call("/cmd/state", {"session": s})
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
+
     async def _run():
         page = await _get_page(s)
         if not page:
@@ -238,12 +265,16 @@ def click(
 ):
     s = _req_session(ctx, session)
 
+    dm = _daemon_call("/cmd/click", {"session": s, "index": index})
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
+
     async def _run():
         page = await _get_page(s)
         if not page:
             return f"Error: session '{s}' not found"
         return await click_element(page, index)
-
     console.print(asyncio.run(_run()))
 
 
@@ -256,12 +287,16 @@ def input(
 ):
     s = _req_session(ctx, session)
 
+    dm = _daemon_call("/cmd/input", {"session": s, "index": index, "text": text})
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
+
     async def _run():
         page = await _get_page(s)
         if not page:
             return f"Error: session '{s}' not found"
         return await input_text(page, index, text)
-
     console.print(asyncio.run(_run()))
 
 
@@ -381,29 +416,26 @@ def get(
     session: Optional[str] = typer.Option(None, "--session", help="Session name"),
 ):
     s = _req_session(ctx, session)
+    dm = _daemon_call("/cmd/get", {"session": s, "what": what, "arg": arg, "selector": selector})
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
 
     async def _run():
         page = await _get_page(s)
         if not page:
             return f"Error: session '{s}' not found"
         match what:
-            case "title":
-                return await get_title(page)
-            case "html":
-                return await get_html(page, selector)
-            case "markdown":
-                return await get_markdown(page)
+            case "title": return await get_title(page)
+            case "html": return await get_html(page, selector)
+            case "markdown": return await get_markdown(page)
             case "text":
-                if not arg:
-                    return "Error: index required for 'get text'"
+                if not arg: return "Error: index required for 'get text'"
                 return await get_element_text(page, int(arg))
             case "value":
-                if not arg:
-                    return "Error: index required for 'get value'"
+                if not arg: return "Error: index required for 'get value'"
                 return await get_element_value(page, int(arg))
-            case _:
-                return f"Error: unknown get type '{what}'. Use: title, html, markdown, text <N>, value <N>"
-
+            case _: return f"Error: unknown get type '{what}'"
     console.print(asyncio.run(_run()))
 
 
@@ -741,6 +773,125 @@ def get_skills(
         case _:
             content = f"Unknown topic: {topic}"
     console.print(content)
+
+
+# ─── Daemon ──────────────────────────────────────────────
+
+@app.command()
+def daemon(
+    action: str = typer.Argument("start", help="start or stop"),
+):
+    if action == "start":
+        from freeact.daemon import run_daemon
+        run_daemon()
+    elif action == "stop":
+        from freeact.daemon import send_daemon_command
+        result = send_daemon_command("/cmd/daemon", {"action": "stop"})
+        console.print(result.get("result", "Daemon stopped"))
+    elif action == "status":
+        from freeact.daemon import is_daemon_running
+        if is_daemon_running():
+            from freeact.daemon import send_daemon_command
+            result = send_daemon_command("/cmd/daemon", {"action": "status"})
+            console.print(f"Daemon running on port {result.get('port', 9341)}")
+        else:
+            console.print("Daemon not running")
+    else:
+        console.print("Usage: freeact daemon [start|stop|status]")
+
+
+# ─── Solve CAPTCHA ──────────────────────────────────────
+
+@app.command()
+def solve_captcha(
+    ctx: typer.Context,
+    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
+):
+    s = _req_session(ctx, session)
+
+    async def _run():
+        from freeact.daemon import is_daemon_running, send_daemon_command
+        if is_daemon_running():
+            return send_daemon_command("/cmd/solve-captcha", {"session": s})
+
+        page = await _get_page(s)
+        if not page:
+            return {"ok": False, "error": f"Session '{s}' not found"}
+        from freeact.captcha import solve_captcha_on_page
+        return await solve_captcha_on_page(page)
+
+    result = asyncio.run(_run())
+    if result.get("solved"):
+        console.print(f"[green]CAPTCHA solved![/green] Method: {result.get('method', 'auto')}")
+    else:
+        console.print(f"[yellow]CAPTCHA not solved: {result.get('error', 'unknown')}[/yellow]")
+
+
+# ─── Remote Assist ──────────────────────────────────────
+
+@app.command()
+def remote_assist(
+    ctx: typer.Context,
+    objective: Optional[str] = typer.Option("Manual browser intervention", "--objective", "-o", help="What the user should do"),
+    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
+):
+    s = _req_session(ctx, session)
+
+    async def _run():
+        from freeact.daemon import is_daemon_running, send_daemon_command
+        if is_daemon_running():
+            return send_daemon_command("/cmd/remote-assist", {"session": s, "objective": objective})
+
+        page = await _get_page(s)
+        if not page:
+            return {"ok": False, "error": f"Session '{s}' not found"}
+        from freeact.remote import start_remote_assist
+        return await start_remote_assist(page, objective)
+
+    result = asyncio.run(_run())
+    console.print(f"[cyan]Remote assist active[/cyan]")
+    console.print(f"Objective: {objective}")
+    console.print("Browser window is visible. Complete the action, then the agent will continue.")
+
+
+# ─── Forge ──────────────────────────────────────────────
+
+@app.command()
+def forge(
+    name: str = typer.Option(..., "--name", help="Skill name"),
+    url: str = typer.Option(..., "--url", help="Target URL"),
+    desc: str = typer.Option("", "--desc", help="Description"),
+    params: Optional[str] = typer.Option(None, "--params", help="Parameters as JSON list"),
+    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory"),
+):
+    import json as _json
+    parameters = []
+    if params:
+        try:
+            parameters = _json.loads(params)
+        except _json.JSONDecodeError:
+            console.print("Error: --params must be valid JSON")
+            return
+
+    if not parameters:
+        parameters = [{"name": "keyword", "description": "Search keyword"}]
+
+    from freeact.skillforge import explore_and_generate
+    result = explore_and_generate(
+        skill_name=name,
+        target_url=url,
+        description=desc or f"Extract data from {url}",
+        parameters=parameters,
+        output_dir=output,
+    )
+
+    if result.get("ok"):
+        console.print(f"[green]Skill generated![/green]")
+        console.print(f"Output: {result['output_dir']}")
+        for f in result.get("files", []):
+            console.print(f"  - {f}")
+    else:
+        console.print(f"[red]Error: {result.get('error')}[/red]")
 
 
 def main_cli():
