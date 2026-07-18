@@ -519,7 +519,7 @@ class DaemonServer:
 
     async def _cmd_connect(self, body: dict) -> dict:
         from freeact.live import detect_browser_cdp, connect_to_live_browser
-        detected = detect_browser_cdp()
+        detected = detect_browser_cdp(body.get("browser", "yandex"))
         if detected:
             result = await connect_to_live_browser(detected["port"])
             if result.get("ok"):

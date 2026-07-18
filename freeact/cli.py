@@ -947,7 +947,7 @@ def connect(
         return
 
     async def _run():
-        detected = detect_browser_cdp()
+        detected = detect_browser_cdp(browser or "yandex")
         if detected:
             console.print(f"[dim]Found {detected['browser']} on port {detected['port']}[/dim]")
             return await connect_to_live_browser(detected["port"])

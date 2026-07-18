@@ -34,10 +34,11 @@ def save_live_config(data: dict):
     LIVE_CONFIG.write_text(json.dumps(data, indent=2))
 
 
-def detect_browser_cdp() -> Optional[dict]:
-    """Try to detect a browser already running with CDP on common ports."""
+def detect_browser_cdp(prefer: str = "yandex") -> Optional[dict]:
+    """Detect browser running with CDP. Prefers Yandex over Chrome."""
     import http.client
 
+    results = []
     for port in [9222, 9223, 9224, 9225]:
         try:
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
@@ -46,15 +47,45 @@ def detect_browser_cdp() -> Optional[dict]:
             data = json.loads(resp.read().decode())
             conn.close()
             browser_name = data.get("Browser", "Unknown")
-            return {
+            ua = data.get("User-Agent", "")
+
+            is_yandex = "YaBrowser" in ua or "yandex" in browser_name.lower()
+            is_chrome = "Chrome" in browser_name and not is_yandex
+            is_edge = "Edg" in ua
+
+            display = "Yandex" if is_yandex else ("Edge" if is_edge else browser_name)
+            results.append({
                 "port": port,
                 "url": f"http://127.0.0.1:{port}",
                 "ws_url": data.get("webSocketDebuggerUrl", ""),
-                "browser": browser_name,
-            }
+                "browser": display,
+                "is_yandex": is_yandex,
+                "is_chrome": is_chrome,
+                "is_edge": is_edge,
+            })
         except Exception:
             continue
-    return None
+
+    if not results:
+        return None
+
+    prefer_lower = prefer.lower()
+    for r in results:
+        is_match = (
+            (prefer_lower == "yandex" and r["is_yandex"]) or
+            (prefer_lower == "chrome" and r["is_chrome"] and not r["is_yandex"]) or
+            (prefer_lower == "edge" and r["is_edge"]) or
+            (prefer_lower in r["browser"].lower())
+        )
+        if is_match:
+            return r
+
+    if prefer_lower == "yandex":
+        for r in results:
+            if r["is_yandex"]:
+                return r
+
+    return results[0]
 
 
 def launch_browser_with_cdp(browser_type: str = "chrome", port: int = CDP_DEFAULT_PORT) -> Optional[dict]:
