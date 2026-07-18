@@ -95,6 +95,16 @@ class DaemonServer:
                 return await self._cmd_solve_captcha(body)
             elif path == "/cmd/remote-assist":
                 return await self._cmd_remote_assist(body)
+            elif path == "/cmd/connect":
+                return await self._cmd_connect(body)
+            elif path == "/cmd/tabs":
+                return await self._cmd_tabs(body)
+            elif path == "/cmd/tab-switch":
+                return await self._cmd_tab_switch(body)
+            elif path == "/cmd/tab-close":
+                return await self._cmd_tab_close(body)
+            elif path == "/cmd/tab-new":
+                return await self._cmd_tab_new(body)
             else:
                 return {"ok": False, "error": f"Unknown command: {path}"}
         except Exception as e:
@@ -103,8 +113,44 @@ class DaemonServer:
     async def _get_page(self, session_name: str):
         sm = get_session_manager()
         s = sm.get(session_name)
+
+        if not s and session_name == "live":
+            sm.create("live", "live")
+            s = sm.get("live")
+
         if not s:
             return None, None
+
+        if s.browser_id == "live":
+            await self.manager.start()
+            cfg = {}
+            try:
+                from freeact.live import get_live_config
+                cfg = get_live_config()
+            except Exception:
+                pass
+            port = cfg.get("port", 9222)
+            try:
+                browser = await self.manager._playwright.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{port}"
+                )
+                contexts = browser.contexts
+                for ctx in contexts:
+                    for page in ctx.pages:
+                        try:
+                            title = await page.title()
+                            return page, s
+                        except Exception:
+                            continue
+                for ctx in contexts:
+                    if ctx.pages:
+                        return ctx.pages[0], s
+                for ctx in contexts:
+                    page = await ctx.new_page()
+                    return page, s
+            except Exception:
+                return None, None
+
         bc = self.config.browsers.get(s.browser_id)
         if not bc:
             bc = BrowserConfig(id=s.browser_id, name=s.browser_id)
@@ -470,6 +516,64 @@ class DaemonServer:
         from freeact.remote import start_remote_assist
         result = await start_remote_assist(page, body.get("objective", ""))
         return result
+
+    async def _cmd_connect(self, body: dict) -> dict:
+        from freeact.live import detect_browser_cdp, launch_browser_with_cdp, connect_to_live_browser
+        browser_type = body.get("browser", "chrome")
+        port = body.get("port", 0)
+
+        detected = detect_browser_cdp()
+        if detected:
+            result = await connect_to_live_browser(detected["port"])
+            if result.get("ok"):
+                return {
+                    "ok": True,
+                    "mode": "reconnect",
+                    "browser": detected["browser"],
+                    "port": detected["port"],
+                    "tabs": result.get("tabs", 0),
+                    "pages": result.get("pages", []),
+                    "message": f"Connected to running {detected['browser']} on port {detected['port']} — {result.get('tabs', 0)} tabs open",
+                }
+
+        launched = launch_browser_with_cdp(browser_type, port or 9222)
+        if launched:
+            result = await connect_to_live_browser(launched["port"])
+            return {
+                "ok": True,
+                "mode": "launched",
+                "browser": launched["browser"],
+                "port": launched["port"],
+                "tabs": result.get("tabs", 0),
+                "pages": result.get("pages", []),
+                "message": f"Launched {launched['browser']} with CDP on port {launched['port']} — user's full profile loaded",
+            }
+
+        return {"ok": False, "error": "No browser found and couldn't launch one. Install Chrome/Yandex/Edge."}
+
+    async def _cmd_tabs(self, body: dict) -> dict:
+        from freeact.live import list_tabs, get_live_config
+        cfg = get_live_config()
+        port = body.get("port", cfg.get("port", 9222))
+        return await list_tabs(port)
+
+    async def _cmd_tab_switch(self, body: dict) -> dict:
+        from freeact.live import switch_tab, get_live_config
+        cfg = get_live_config()
+        port = body.get("port", cfg.get("port", 9222))
+        return await switch_tab(port, body["index"])
+
+    async def _cmd_tab_close(self, body: dict) -> dict:
+        from freeact.live import close_tab, get_live_config
+        cfg = get_live_config()
+        port = body.get("port", cfg.get("port", 9222))
+        return await close_tab(port, body["index"])
+
+    async def _cmd_tab_new(self, body: dict) -> dict:
+        from freeact.live import new_tab, get_live_config
+        cfg = get_live_config()
+        port = body.get("port", cfg.get("port", 9222))
+        return await new_tab(port, body.get("url", "about:blank"))
 
 
 async def _run_http_server(server: DaemonServer):

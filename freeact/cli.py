@@ -3,6 +3,7 @@
 import asyncio
 import sys
 import io
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -94,6 +95,28 @@ async def _get_page(session_name: str):
     s = sm.get(session_name)
     if not s:
         return None
+
+    if s.browser_id == "live":
+        from freeact.live import get_live_config, connect_to_live_browser
+        cfg = get_live_config()
+        port = cfg.get("port", 9222)
+        result = await connect_to_live_browser(port)
+        if result.get("ok"):
+            pw = result["browser"]
+            br = result["cdp_browser"]
+            ctxs = br.contexts
+            for ctx in ctxs:
+                for page in ctx.pages:
+                    try:
+                        await page.title()
+                        return page
+                    except Exception:
+                        continue
+            for ctx in ctxs:
+                if ctx.pages:
+                    return ctx.pages[0]
+        return None
+
     manager = await get_browser_manager()
     config = get_config()
     bc = config.browsers.get(s.browser_id)
@@ -141,7 +164,7 @@ def navigate(
 ):
     s = _req_session(ctx, session)
     dm = _daemon_call("/cmd/navigate", {"session": s, "url": url})
-    if dm is not None:
+    if dm is not None and dm.get("ok"):
         console.print(dm.get("result", dm.get("error", str(dm))))
         return
 
@@ -223,8 +246,8 @@ def state(
     s = _req_session(ctx, session)
 
     dm = _daemon_call("/cmd/state", {"session": s})
-    if dm is not None:
-        console.print(dm.get("result", dm.get("error", str(dm))))
+    if dm is not None and dm.get("ok"):
+        console.print(dm.get("result", ""))
         return
 
     async def _run():
@@ -266,7 +289,7 @@ def click(
     s = _req_session(ctx, session)
 
     dm = _daemon_call("/cmd/click", {"session": s, "index": index})
-    if dm is not None:
+    if dm is not None and dm.get("ok"):
         console.print(dm.get("result", dm.get("error", str(dm))))
         return
 
@@ -288,7 +311,7 @@ def input(
     s = _req_session(ctx, session)
 
     dm = _daemon_call("/cmd/input", {"session": s, "index": index, "text": text})
-    if dm is not None:
+    if dm is not None and dm.get("ok"):
         console.print(dm.get("result", dm.get("error", str(dm))))
         return
 
@@ -417,7 +440,7 @@ def get(
 ):
     s = _req_session(ctx, session)
     dm = _daemon_call("/cmd/get", {"session": s, "what": what, "arg": arg, "selector": selector})
-    if dm is not None:
+    if dm is not None and dm.get("ok"):
         console.print(dm.get("result", dm.get("error", str(dm))))
         return
 
@@ -892,6 +915,114 @@ def forge(
             console.print(f"  - {f}")
     else:
         console.print(f"[red]Error: {result.get('error')}[/red]")
+
+
+# ─── Live Browser ──────────────────────────────────────
+
+@app.command()
+def connect(
+    browser: Optional[str] = typer.Option("chrome", "--browser", "-b", help="Browser: chrome, yandex, edge"),
+    port: Optional[int] = typer.Option(0, "--port", "-p", help="CDP port (0=auto-detect)"),
+):
+    """Connect to your REAL running browser. All tabs, logins, cookies preserved."""
+    from freeact.live import detect_browser_cdp, launch_browser_with_cdp, connect_to_live_browser, save_live_config
+
+    dm = _daemon_call("/cmd/connect", {"browser": browser, "port": port})
+    if dm is not None and dm.get("ok"):
+        if dm.get("ok"):
+            console.print(f"[green]{dm.get('message')}[/green]")
+            for p in dm.get("pages", []):
+                console.print(f"  Tab: {p.get('title', '?')[:80]}")
+        else:
+            console.print(f"[red]{dm.get('error')}[/red]")
+        return
+
+    async def _run():
+        detected = detect_browser_cdp()
+        if detected:
+            result = await connect_to_live_browser(detected["port"])
+            if result.get("ok"):
+                return result
+        launched = launch_browser_with_cdp(browser, port or 9222)
+        if launched:
+            return await connect_to_live_browser(launched["port"])
+        return {"ok": False, "error": "No browser found"}
+
+    result = asyncio.run(_run())
+    if result.get("ok"):
+        sm = get_session_manager()
+        sm.create("live", "live")
+        console.print(f"[green]Connected![/green] {result.get('tabs', 0)} tabs open")
+        for p in result.get("pages", []):
+            console.print(f"  Tab: {p.get('title', '?')[:80]}")
+    else:
+        console.print(f"[red]{result.get('error')}[/red]")
+
+
+@app.command()
+def tabs():
+    """List all open tabs in your connected browser."""
+    dm = _daemon_call("/cmd/tabs", {})
+    if dm is not None and dm.get("ok"):
+        if dm.get("ok"):
+            for t in dm.get("tabs", []):
+                console.print(f"  [{t['id']}] {t['title'][:80]}")
+                console.print(f"       {t['url'][:100]}")
+        else:
+            console.print(f"[red]{dm.get('error')}[/red]")
+        return
+
+    from freeact.live import list_tabs, get_live_config
+    cfg = get_live_config()
+    result = asyncio.run(list_tabs(cfg.get("port", 9222)))
+    if result.get("ok"):
+        for t in result.get("tabs", []):
+            console.print(f"  [{t['id']}] {t['title'][:80]}")
+            console.print(f"       {t['url'][:100]}")
+    else:
+        console.print(f"[red]{result.get('error')}[/red]")
+
+
+@app.command()
+def tab(
+    action: str = typer.Argument(..., help="switch <id>, close <id>, new [url]"),
+    arg: Optional[str] = typer.Argument(None, help="Tab index or URL"),
+):
+    """Manage browser tabs: switch, close, open new."""
+    dm_path = None
+    dm_body = {}
+
+    if action == "switch":
+        dm_path = "/cmd/tab-switch"
+        dm_body = {"index": int(arg) if arg else 0}
+    elif action == "close":
+        dm_path = "/cmd/tab-close"
+        dm_body = {"index": int(arg) if arg else 0}
+    elif action == "new":
+        dm_path = "/cmd/tab-new"
+        dm_body = {"url": arg or "about:blank"}
+    else:
+        console.print(f"Unknown action: {action}. Use: switch <N>, close <N>, new <url>")
+        return
+
+    dm = _daemon_call(dm_path, dm_body)
+    if dm is not None and dm.get("ok"):
+        console.print(dm.get("message", dm.get("error", json.dumps(dm))))
+        return
+
+    async def _run():
+        from freeact.live import switch_tab, close_tab, new_tab, get_live_config
+        cfg = get_live_config()
+        port = cfg.get("port", 9222)
+        if action == "switch":
+            return await switch_tab(port, int(arg) if arg else 0)
+        elif action == "close":
+            return await close_tab(port, int(arg) if arg else 0)
+        elif action == "new":
+            return await new_tab(port, arg or "about:blank")
+
+    result = asyncio.run(_run())
+    console.print(result.get("message", result.get("error", str(result))))
 
 
 def main_cli():
