@@ -5,6 +5,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
+[![Version](https://img.shields.io/badge/version-0.2.0-orange.svg)]()
 
 FreeAct is a free, open-source CLI that gives AI agents (Claude Code, OpenCode, Cursor, Codex) the ability to control **real installed browsers** — Chrome, Yandex, Edge — without any automation flags that anti-bot systems can detect.
 
@@ -13,13 +14,13 @@ FreeAct is a free, open-source CLI that gives AI agents (Claude Code, OpenCode, 
 ## How It Works
 
 ```
-freeact CLI → subprocess.Popen(browser.exe) → browser starts as NORMAL
-                    ↓                                      ↓
-           NO automation flags                    Identical to user launch
-                    ↓                                      ↓
-        CDP connect_over_cdp()                  Anti-bot: "looks like a real user"
-                    ↓
-              AI agent controls browser
+freeact daemon (HTTP server) → manages browser lifecycle
+         ↓                              ↓
+   subprocess.Popen(browser.exe)   NO automation flags
+         ↓                              ↓
+   CDP connect_over_cdp()          Anti-bot: "real user"
+         ↓
+   AI agent controls browser via HTTP API
 ```
 
 ## Quick Start
@@ -29,28 +30,70 @@ freeact CLI → subprocess.Popen(browser.exe) → browser starts as NORMAL
 pip install freeact
 playwright install chromium
 
-# 2. Extract any webpage (stealth mode)
-freeact stealth-extract https://example.com
+# 2. Start daemon (persistent browser — faster commands)
+freeact daemon start
 
-# 3. Full browser automation (Yandex default, undetectable)
-freeact browser create --name wb --desc "Wildberries shopping"
+# 3. Create browser + open site (Yandex default, undetectable)
+freeact --session wb browser create --name wb --desc "Wildberries"
 freeact --session wb browser open <id> https://www.wildberries.ru
-freeact --session wb state                    # [1]<button> Login, [2]<input> Search...
-freeact --session wb input 2 "iPhone 15"      # Type by index
-freeact --session wb keys Enter               # Press Enter
-freeact --session wb wait stable              # Wait for results
-freeact --session wb get markdown             # Extract page content
-freeact --session wb screenshot
-freeact session close wb
+freeact --session wb state                    # [1]<button> Login, [2]<input>...
+freeact --session wb input 12 "iPhone 15"     # Type by index
+freeact --session wb keys Enter
+freeact --session wb wait stable
+freeact --session wb get markdown
+
+# 4. Solve CAPTCHAs (free, multi-strategy)
+freeact --session wb solve-captcha
+
+# 5. Generate reusable scraping skills
+freeact forge --name my-scraper --url https://site.com
+
+# 6. When done
+freeact daemon stop
 ```
 
 ## Features
+
+### Daemon Mode (v0.2.0)
+Background HTTP server on `127.0.0.1:9341` keeps the browser alive between commands. Commands are instant — no per-command startup delay, JS state preserved.
+
+```bash
+freeact daemon start     # Start background server
+freeact daemon status    # Check if running
+freeact daemon stop      # Stop daemon
+```
+
+### CAPTCHA Solver (v0.2.0) — Free & Unique
+Multi-strategy approach, tries in order:
+1. **Audio CAPTCHA** + speech-to-text (Google Speech API or Whisper)
+2. **Image CAPTCHA** + OCR (Tesseract or EasyOCR)
+3. **reCAPTCHA v2** — checkbox click with human-like bezier mouse movement
+4. **hCaptcha / Cloudflare Turnstile** — behavioral simulation + timing delays
+5. **Custom image CAPTCHAs** — finds captcha images and input fields automatically
+
+```bash
+freeact --session wb solve-captcha
+# → "CAPTCHA solved! Method: audio (text: 284719)"
+```
+
+### Remote Assist (v0.2.0)
+When automation gets stuck, hand control to a human:
+```bash
+freeact --session wb remote-assist --objective "Log in to complete the purchase"
+```
+
+### Skill Forge (v0.2.0)
+Generate reusable scraping skills from a single command:
+```bash
+freeact forge --name wb-scraper --url https://www.wildberries.ru --desc "WB product search"
+# Output: output/wb-scraper/skill.py + SKILL.md + requirements.txt
+```
 
 ### Undetectable Browser Mode
 - Launches **real installed browsers** (Chrome, Yandex, Edge) via subprocess
 - **No `--enable-automation` flag** — browser doesn't know it's automated
 - Copies user's real profile (cookies, localStorage, history)
-- Anti-bot JS challenges (Turnstile, reCAPTCHA, Wildberries) run normally and pass
+- Anti-bot JS challenges (Turnstile, reCAPTCHA) run normally and pass
 
 ### Index-Based Interaction
 - `state` returns elements indexed as `[1]`, `[2]`, `[3]`... — no DOM parsing
@@ -66,32 +109,19 @@ freeact session close wb
 | `edge` | Microsoft Edge | Enterprise, Microsoft 365 |
 | `chromium` | Playwright Chromium | Fast headless, disposable |
 
-### Network Capture
-```bash
-freeact --session s1 network requests --type xhr,fetch
-freeact --session s1 network request 0
-```
-
-### Session & Concurrency
-- Multiple independent sessions on one browser (shared login state)
-- Multiple browsers with isolated cookies/profiles
-- Auto-cleanup after 8 hours
-
-### Stealth Extraction
-```bash
-freeact stealth-extract https://example.com --content-type markdown
-freeact stealth-extract https://example.com --proxy socks5://proxy:1080
-```
-
 ## All Commands
 
 | Group | Commands |
 |-------|----------|
-| **Browser** | `create`, `open`, `list`, `update`, `delete`, `types`, `connect` |
+| **Daemon** | `start`, `stop`, `status` |
+| **Browser** | `create`, `open`, `list`, `update`, `delete`, `types` |
 | **Navigation** | `navigate`, `back`, `forward`, `reload` |
 | **Interaction** | `click`, `input`, `hover`, `select`, `keys`, `scroll`, `scrollintoview`, `upload` |
 | **Extraction** | `get title/text/html/markdown/value`, `eval`, `screenshot` |
 | **Network** | `network requests/request/clear` |
+| **CAPTCHA** | `solve-captcha` |
+| **Remote** | `remote-assist` |
+| **Skill** | `forge` |
 | **Session** | `session list/close` |
 | **Other** | `stealth-extract`, `get-skills`, `proxy`, `wait` |
 
@@ -99,7 +129,7 @@ freeact stealth-extract https://example.com --proxy socks5://proxy:1080
 
 ### Prerequisites
 - Python 3.12+
-- At least one browser: Chrome, Yandex Browser, or Edge
+- Yandex Browser, Chrome, or Edge
 - Playwright (for `chromium` type and `stealth-extract`)
 
 ```bash
@@ -107,34 +137,40 @@ pip install freeact
 playwright install chromium
 ```
 
+### Optional Dependencies
+
+```bash
+# Audio CAPTCHA solving
+pip install SpeechRecognition
+
+# OR local Whisper (no internet needed):
+pip install openai-whisper
+
+# Image CAPTCHA solving
+pip install pytesseract
+# OR
+pip install easyocr
+```
+
 ### For AI Agents (OpenCode, Claude Code, Cursor)
 
 Tell your agent:
-> Install freeact skill from https://github.com/user/freeact
+> Install freeact skill from https://github.com/xuviga/freeact
 
 Or manually:
 ```bash
 cp SKILL.md ~/.config/opencode/skills/freeact/SKILL.md
 ```
 
-## Compared to BrowserAct
-
-| Feature | BrowserAct | FreeAct |
-|---------|-----------|---------|
-| Real browser mode | Chrome-direct (paid) | **Free, all browsers** |
-| Stealth browsers | Paid (cloud) | Playwright Chromium (free) |
-| Managed proxies | Paid | BYO proxy (free) |
-| CAPTCHA solving | Paid | Not yet |
-| Price | Free tier + paid | **100% free, MIT** |
-| Open source | No | **Yes** |
-
 ## Project Structure
 
 ```
 freeact/
 ├── freeact/
-│   ├── cli.py           # Typer CLI — 30+ commands
+│   ├── cli.py           # Typer CLI — 35+ commands with daemon routing
+│   ├── daemon.py        # HTTP server (127.0.0.1:9341) for persistent browser
 │   ├── browser.py       # Real browser launch + CDP connection
+│   ├── captcha.py       # Multi-strategy CAPTCHA solver (audio/OCR/behavioral)
 │   ├── session.py       # Session persistence
 │   ├── state.py         # Indexed element tree [N]
 │   ├── interaction.py   # click, input, hover, scroll, upload
@@ -142,6 +178,8 @@ freeact/
 │   ├── network.py       # XHR/fetch interception
 │   ├── stealth.py       # Anti-detection patches (canvas, WebGL, webdriver)
 │   ├── proxy.py         # SOCKS5/HTTP proxy
+│   ├── remote.py        # Remote assist (headed takeover)
+│   ├── skillforge.py    # Skill generator (skill.py + SKILL.md)
 │   ├── skills.py        # get-skills system for AI agents
 │   └── config.py        # ~/.freeact/ configuration
 ├── SKILL.md             # OpenCode/Claude Code agent skill
@@ -151,49 +189,32 @@ freeact/
 
 ## How It Beats Anti-Bot Protection
 
-```
-YouTube, VK, Avito ─→ just works (most sites)
-       │
-Wildberries, Cloudflare ─→ use yandex/chrome type (real browser)
+| Protection | FreeAct Approach |
+|---|---|
+| **IP reputation** | Uses real browser (Yandex TLS fingerprint) + profile copy |
+| **WebDriver detection** | No `--enable-automation` flag, `navigator.webdriver` hidden |
+| **Canvas/WebGL fingerprint** | Stealth patches randomize canvas output |
+| **JS Challenges (reCAPTCHA)** | Free audio/OCR/behavioral solver |
+| **Turnstile (Cloudflare)** | Human-like mouse + timing simulation |
+| **hCaptcha** | Checkbox click + behavioral analysis bypass |
+| **Profile/cookie check** | Real profile copy with existing cookies |
 
-What anti-bot sees with FreeAct:
-  ✓ Real browser TLS fingerprint (Yandex/Chrome native)
-  ✓ Real user profile (cookies, localStorage, history)
-  ✓ Normal GPU rendering (headed mode)
-  ✓ No webdriver flag
-  ✓ No CDP leak at launch time
+## Changelog
 
-What anti-bot sees with Playwright/Selenium:
-  ✗ --enable-automation flag in command line
-  ✗ navigator.webdriver = true
-  ✗ Empty profile (no cookies, no history)
-  ✗ CDP active from launch
-```
+### v0.2.0 — Daemon, CAPTCHA, Remote, Forge
+- Daemon mode: HTTP server on 127.0.0.1:9341 for persistent browser
+- CAPTCHA solver: 4 strategies (audio, OCR, reCAPTCHA, Turnstile/hCaptcha)
+- Remote assist: headed takeover for manual intervention
+- Skill Forge: generates reusable skill.py + SKILL.md packages
+- Daemon-aware CLI routing: commands auto-detect daemon vs fallback
 
-## Config
-
-`~/.freeact/config.json`:
-```json
-{
-  "default_browser": "yandex",
-  "headless": false,
-  "timeout": 30000,
-  "stealth": true
-}
-```
-
-## Roadmap
-
-- [x] Real browser mode (Chrome, Yandex, Edge)
-- [x] Indexed interaction (state, click, input)
-- [x] Network capture (XHR/fetch)
-- [x] Stealth extraction
-- [x] Session management
-- [x] AI agent SKILL.md
-- [ ] Persistent daemon mode (keep browser alive)
-- [ ] CAPTCHA solving integration
-- [ ] Remote assist (VNC)
-- [ ] Skill Forge (scraping skill generator)
+### v0.1.0 — Initial Release
+- Real browser mode (Chrome, Yandex, Edge) via subprocess
+- Index-based interaction (state, click, input)
+- Network capture (XHR/fetch)
+- Stealth extraction
+- Session management
+- AI agent SKILL.md
 
 ## License
 
