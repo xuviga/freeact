@@ -331,38 +331,29 @@ async def _get_page(session_name: str):
     if not s:
         return None
 
-    if s.browser_id == "live":
-        from freeact.live import get_live_config, connect_to_live_browser
-        cfg = get_live_config()
-        port = cfg.get("port", 9222)
-        result = await connect_to_live_browser(port)
-        if result.get("ok"):
-            br = result["cdp_browser"]
-            manager = await get_browser_manager()
-            saved_url = None
-            try:
-                saved_url = await manager.get_saved_url(session_name)
-            except Exception:
-                pass
-            for ctx in br.contexts:
-                for page in ctx.pages:
-                    try:
-                        await page.title()
-                        if saved_url and saved_url in page.url:
-                            return page
-                    except Exception:
-                        continue
-            for ctx in br.contexts:
-                for page in ctx.pages:
-                    try:
-                        await page.title()
-                        return page
-                    except Exception:
-                        continue
-        return None
-
     manager = await get_browser_manager()
     config = get_config()
+
+    if s.browser_id == "live" or s.browser_id not in config.browsers:
+        try:
+            from freeact.live import get_live_config
+            cfg = get_live_config()
+            port = cfg.get("port", 9222)
+            await manager.start()
+            browser = await manager._playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}"
+            )
+            contexts = browser.contexts
+            if contexts:
+                page = await contexts[0].new_page()
+                manager._pages[s.browser_id] = page
+                manager._browsers[s.browser_id] = browser
+                manager._contexts[s.browser_id] = contexts[0]
+                return page
+        except Exception:
+            pass
+        return None
+
     bc = config.browsers.get(s.browser_id)
     if not bc:
         bc = BrowserConfig(id=s.browser_id, name=s.browser_id)
@@ -378,21 +369,9 @@ async def _get_page(session_name: str):
                 f"http://127.0.0.1:{port}"
             )
             contexts = browser.contexts
-            for ctx in contexts:
-                for p in ctx.pages:
-                    try:
-                        await p.title()
-                        page = p
-                        manager._pages[s.browser_id] = p
-                        break
-                    except Exception:
-                        continue
-                if page:
-                    break
-            if page is None and contexts:
+            if contexts:
                 page = await contexts[0].new_page()
                 manager._pages[s.browser_id] = page
-            if page:
                 manager._browsers[s.browser_id] = browser
                 manager._contexts[s.browser_id] = contexts[0]
         except Exception:
@@ -932,18 +911,25 @@ def connect(browser: Optional[str] = typer.Option("yandex", "--browser", "-b", h
             sm = get_session_manager()
             sm.create("live", "live")
             console.print(f"[green]{dm.get('message')}[/green]")
-            for p in dm.get("pages", []):
-                console.print(f"  Tab: {p.get('title', '?')[:80]}")
         else:
             console.print(f"[red]{dm.get('error')}[/red]")
         return
 
     async def _run():
-        from freeact.live import detect_browser_cdp, connect_to_live_browser
+        from freeact.live import detect_browser_cdp
         detected = detect_browser_cdp(browser or "yandex")
         if detected:
             console.print(f"[dim]Found {detected['browser']} on port {detected['port']}[/dim]")
-            return await connect_to_live_browser(detected["port"])
+            from freeact.browser import get_browser_manager
+            mgr = await get_browser_manager()
+            await mgr.start()
+            br = await mgr._playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{detected['port']}")
+            if br.contexts:
+                page = await br.contexts[0].new_page()
+                sm = get_session_manager()
+                sm.create("live", "live")
+                return {"ok": True, "message": f"Connected to {detected['browser']} on port {detected['port']} — new tab created"}
+            return {"ok": False, "error": "Browser has no contexts"}
         console.print("[yellow]Browser not running with CDP.[/yellow]")
         console.print("Run: [green]freeact setup --browser yandex[/green] for one-time setup")
         return {"ok": False, "error": "Browser not running with CDP. Run: freeact setup"}
@@ -951,9 +937,7 @@ def connect(browser: Optional[str] = typer.Option("yandex", "--browser", "-b", h
     if result.get("ok"):
         sm = get_session_manager()
         sm.create("live", "live")
-        console.print(f"[green]Connected![/green] {result.get('tabs', 0)} tabs")
-        for p in result.get("pages", []):
-            console.print(f"  Tab: {p.get('title', '?')[:80]}")
+        console.print(f"[green]{result.get('message')}[/green]")
 
 
 @app.command()

@@ -176,37 +176,26 @@ class DaemonServer:
                 pass
             self._page_cache.pop(session_name, None)
 
-        if s.browser_id == "live":
-            await self.manager.start()
-            cfg = {}
+        if s.browser_id == "live" or s.browser_id not in self.config.browsers:
             try:
-                from freeact.live import get_live_config
-                cfg = get_live_config()
-            except Exception:
-                pass
-            port = cfg.get("port", 9222)
-            try:
+                await self.manager.start()
+                cfg = {}
+                try:
+                    from freeact.live import get_live_config
+                    cfg = get_live_config()
+                except Exception:
+                    pass
+                port = cfg.get("port", 9222)
                 browser = await self.manager._playwright.chromium.connect_over_cdp(
                     f"http://127.0.0.1:{port}"
                 )
                 contexts = browser.contexts
-                for ctx in contexts:
-                    for page in ctx.pages:
-                        try:
-                            await page.title()
-                            self._page_cache[session_name] = page
-                            return page, s
-                        except Exception:
-                            continue
-                for ctx in contexts:
-                    if ctx.pages:
-                        p = ctx.pages[0]
-                        self._page_cache[session_name] = p
-                        return p, s
-                for ctx in contexts:
-                    page = await ctx.new_page()
-                    self._page_cache[session_name] = page
-                    return page, s
+                if not contexts:
+                    return None, None
+                page = await contexts[0].new_page()
+                self._page_cache[session_name] = page
+                self._page_cache_urls[session_name] = page.url
+                return page, s
             except Exception:
                 return None, None
 
@@ -229,18 +218,7 @@ class DaemonServer:
                     f"http://127.0.0.1:{port}"
                 )
                 contexts = browser.contexts
-                for ctx in contexts:
-                    for p in ctx.pages:
-                        try:
-                            await p.title()
-                            page = p
-                            self.manager._pages[s.browser_id] = p
-                            break
-                        except Exception:
-                            continue
-                    if page:
-                        break
-                if page is None and contexts:
+                if contexts:
                     page = await contexts[0].new_page()
                     self.manager._pages[s.browser_id] = page
                 if page:
@@ -645,22 +623,31 @@ class DaemonServer:
         return result
 
     async def _cmd_connect(self, body: dict) -> dict:
-        from freeact.live import detect_browser_cdp, connect_to_live_browser
+        from freeact.live import detect_browser_cdp
         detected = detect_browser_cdp(body.get("browser", "yandex"))
         if detected:
-            result = await connect_to_live_browser(detected["port"])
-            if result.get("ok"):
+            try:
+                await self.manager.start()
+                browser = await self.manager._playwright.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{detected['port']}"
+                )
+                contexts = browser.contexts
+                if not contexts:
+                    return {"ok": False, "error": "Browser has no contexts"}
+                page = await contexts[0].new_page()
                 sm = get_session_manager()
                 sm.create("live", "live")
+                self._page_cache["live"] = page
+                self._page_cache_urls["live"] = page.url
                 return {
                     "ok": True,
-                    "mode": "reconnect",
                     "browser": detected["browser"],
                     "port": detected["port"],
-                    "tabs": result.get("tabs", 0),
-                    "pages": result.get("pages", []),
-                    "message": f"Connected to {detected['browser']} on port {detected['port']} — {result.get('tabs', 0)} tabs",
+                    "tabs": len(contexts[0].pages),
+                    "message": f"Connected to {detected['browser']} on port {detected['port']} — new tab created",
                 }
+            except Exception as e:
+                return {"ok": False, "error": f"Connection failed: {e}"}
         return {"ok": False, "error": "Browser not running with CDP. Run: freeact setup"}
 
     async def _cmd_tabs(self, body: dict) -> dict:
