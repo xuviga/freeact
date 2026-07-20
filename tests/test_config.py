@@ -17,7 +17,7 @@ def test_default_config():
 def test_browser_config():
     bc = BrowserConfig(id="test", name="Test")
     assert bc.id == "test"
-    assert bc.type == "chromium"
+    assert bc.type == "yandex"
 
 
 def test_config_save_load(tmp_path):

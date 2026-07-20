@@ -376,17 +376,11 @@ class BrowserManager:
 
         bt = (bc.type or config.default_browser).lower()
         if bt in ("chromium", "playwright"):
-            ctx = await self._playwright.chromium.launch_persistent_context(
-                user_data_dir=str(PROFILES_DIR / bc.id),
-                headless=config.headless,
-                viewport={"width": 1920, "height": 1080},
-                args=["--no-sandbox", "--disable-gpu"],
+            raise RuntimeError(
+                "Chromium/Playwright browser is disabled. "
+                "Use only real browsers: yandex, chrome, edge. "
+                "Set config.default_browser to 'yandex'."
             )
-            if config.stealth:
-                await apply_stealth_patches(ctx)
-            self._browsers[bc.id] = ctx
-            self._contexts[bc.id] = ctx
-            return ctx, ctx
 
         reconnected = await self._try_reconnect(bc.id)
         if reconnected:

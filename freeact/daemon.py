@@ -145,6 +145,19 @@ class DaemonServer:
         if cached is not None:
             try:
                 if not cached.is_closed():
+                    ctx = cached.context
+                    all_pages = ctx.pages
+                    if len(all_pages) > 1:
+                        for popup in all_pages:
+                            if popup != cached and not popup.is_closed():
+                                try:
+                                    popup_url = popup.url
+                                    if popup_url and popup_url not in ("about:blank", ""):
+                                        self._page_cache[session_name] = popup
+                                        self._page_cache_urls[session_name] = popup_url
+                                        return popup, s
+                                except Exception:
+                                    pass
                     cur_url = cached.url
                     if self._page_cache_urls.get(session_name) == cur_url:
                         return cached, s

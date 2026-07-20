@@ -25,7 +25,7 @@ _CONFIG_CACHE_TTL: float = 5.0
 class BrowserConfig:
     id: str
     name: str
-    type: str = "chromium"
+    type: str = "yandex"
     desc: str = ""
     proxy: str | None = None
     private: bool = False
