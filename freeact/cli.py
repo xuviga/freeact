@@ -310,6 +310,7 @@ def browser(
                 sm.create(session_name, "cdp")
                 manager._browsers["cdp"] = browser
                 manager._contexts["cdp"] = context
+                manager._pages["cdp"] = page
                 return f"Connected to {cdp_url}, session '{session_name}' started"
             case _:
                 return f"Unknown browser action: {action}"
@@ -366,6 +367,37 @@ async def _get_page(session_name: str):
     if not bc:
         bc = BrowserConfig(id=s.browser_id, name=s.browser_id)
     page = await manager.get_page(s.browser_id, bc, config)
+
+    if page is None and s.browser_id not in config.browsers:
+        try:
+            from freeact.live import get_live_config
+            cfg = get_live_config()
+            port = cfg.get("port", 9222)
+            await manager.start()
+            browser = await manager._playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}"
+            )
+            contexts = browser.contexts
+            for ctx in contexts:
+                for p in ctx.pages:
+                    try:
+                        await p.title()
+                        page = p
+                        manager._pages[s.browser_id] = p
+                        break
+                    except Exception:
+                        continue
+                if page:
+                    break
+            if page is None and contexts:
+                page = await contexts[0].new_page()
+                manager._pages[s.browser_id] = page
+            if page:
+                manager._browsers[s.browser_id] = browser
+                manager._contexts[s.browser_id] = contexts[0]
+        except Exception:
+            pass
+
     if page:
         saved_url = await manager.get_saved_url(session_name)
         if saved_url:
@@ -897,6 +929,8 @@ def connect(browser: Optional[str] = typer.Option("yandex", "--browser", "-b", h
     dm = _daemon_call("/cmd/connect", {"browser": browser, "port": port})
     if dm is not None:
         if dm.get("ok"):
+            sm = get_session_manager()
+            sm.create("live", "live")
             console.print(f"[green]{dm.get('message')}[/green]")
             for p in dm.get("pages", []):
                 console.print(f"  Tab: {p.get('title', '?')[:80]}")

@@ -214,6 +214,41 @@ class DaemonServer:
         if not bc:
             bc = BrowserConfig(id=s.browser_id, name=s.browser_id)
         page = await self.manager.get_page(s.browser_id, bc, self.config)
+
+        if page is None and s.browser_id not in self.config.browsers:
+            try:
+                await self.manager.start()
+                cfg = {}
+                try:
+                    from freeact.live import get_live_config
+                    cfg = get_live_config()
+                except Exception:
+                    pass
+                port = cfg.get("port", 9222)
+                browser = await self.manager._playwright.chromium.connect_over_cdp(
+                    f"http://127.0.0.1:{port}"
+                )
+                contexts = browser.contexts
+                for ctx in contexts:
+                    for p in ctx.pages:
+                        try:
+                            await p.title()
+                            page = p
+                            self.manager._pages[s.browser_id] = p
+                            break
+                        except Exception:
+                            continue
+                    if page:
+                        break
+                if page is None and contexts:
+                    page = await contexts[0].new_page()
+                    self.manager._pages[s.browser_id] = page
+                if page:
+                    self.manager._browsers[s.browser_id] = browser
+                    self.manager._contexts[s.browser_id] = contexts[0]
+            except Exception:
+                pass
+
         if page:
             saved = await self.manager.get_saved_url(session_name)
             if saved:
@@ -445,15 +480,27 @@ class DaemonServer:
                     bc = BrowserConfig(id=browser_id, name=browser_id,
                                        type=body.get("type", self.config.default_browser))
 
-                page = await self.manager.get_page(browser_id, bc, self.config)
+                try:
+                    page = await self.manager.get_page(browser_id, bc, self.config)
+                except RuntimeError:
+                    return {"ok": False, "error": f"Cannot launch browser '{browser_id}'. Check that the browser is not already running."}
+
+                if not page:
+                    return {"ok": False, "error": f"Browser '{browser_id}' not available"}
+
                 await self._ensure_state_engine(session_name, page)
                 if url and url != "about:blank":
-                    await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-                    await wait_for_dom_stable(page, timeout_ms=5000)
+                    try:
+                        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                        await wait_for_dom_stable(page, timeout_ms=5000)
+                    except Exception as e:
+                        return {"ok": False, "error": f"Navigation failed: {e}"}
 
                 await self.manager.save_page_url(browser_id, session_name, page.url)
                 sm = get_session_manager()
                 sm.create(session_name, browser_id)
+                self._page_cache[session_name] = page
+                self._page_cache_urls[session_name] = page.url
                 return {"ok": True,
                         "result": f"Browser '{browser_id}' opened, session '{session_name}' started"}
 
@@ -603,6 +650,8 @@ class DaemonServer:
         if detected:
             result = await connect_to_live_browser(detected["port"])
             if result.get("ok"):
+                sm = get_session_manager()
+                sm.create("live", "live")
                 return {
                     "ok": True,
                     "mode": "reconnect",
@@ -878,7 +927,7 @@ def send_daemon_command(path: str, body: dict | None = None) -> dict:
     if config.api_key:
         headers["X-API-Key"] = config.api_key
     try:
-        conn = http.client.HTTPConnection(DAEMON_HOST, DAEMON_PORT, timeout=30)
+        conn = http.client.HTTPConnection(DAEMON_HOST, DAEMON_PORT, timeout=120)
         conn.request("POST", path, body=body_json, headers=headers)
         response = conn.getresponse()
         data = json.loads(response.read().decode("utf-8"))

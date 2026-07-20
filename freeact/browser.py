@@ -386,7 +386,10 @@ class BrowserManager:
         if reconnected:
             return reconnected
 
-        return await self._launch_new(bc, config)
+        try:
+            return await self._launch_new(bc, config)
+        except RuntimeError:
+            return None
 
     def _is_page_valid(self, page: Page) -> bool:
         try:
@@ -424,7 +427,14 @@ class BrowserManager:
         if cached_page and self._is_page_valid(cached_page):
             return cached_page
 
-        _, context = await self.get_or_create_context(bc, global_config)
+        pair = await self.get_or_create_context(bc, global_config)
+        if pair is None:
+            cached = self._pages.get(browser_id)
+            if cached and self._is_page_valid(cached):
+                return cached
+            return None
+
+        _, context = pair
 
         for page in context.pages:
             if self._is_page_valid(page):
