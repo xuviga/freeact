@@ -1,114 +1,123 @@
-"""Network monitoring — capture XHR/fetch requests, HAR recording."""
+"""Network monitoring — capture XHR/fetch requests via JS interception only.
+
+Stability fix: no longer intercepts ALL requests via page.route().
+Uses pure JS interception of fetch() and XMLHttpRequest for zero overhead.
+"""
 
 import json
-import io
-from pathlib import Path
-from typing import Optional
 from playwright.async_api import Page
 
+_NETWORK_INIT = """
+() => {
+    if (window.__freeact_network_ready) return;
+    window.__freeact_network_ready = true;
 
-async def start_network_monitoring(page: Page):
-    await page.route(
-        "**/*",
-        lambda route: route.continue_(),
-    )
-    await page.evaluate(
-        """
-        () => {
-            if (!window.__freeact_network_log) {
-                window.__freeact_network_log = [];
-                const origFetch = window.fetch;
-                window.fetch = async function(...args) {
-                    const start = Date.now();
-                    const request = {
-                        id: 'fetch-' + Math.random().toString(36).substring(2, 10),
-                        url: typeof args[0] === 'string' ? args[0] : args[0].url,
-                        method: (args[1] && args[1].method) || 'GET',
-                        type: 'fetch',
-                        headers: args[1] && args[1].headers ? args[1].headers : {},
-                        start: start,
-                    };
-                    if (args[1] && args[1].body) request.body = args[1].body;
+    if (!window.__freeact_network_log) {
+        window.__freeact_network_log = [];
+    }
+    window.__freeact_network_max = %d;
 
-                    try {
-                        const response = await origFetch.apply(this, args);
-                        const cloned = response.clone();
-                        request.status = response.status;
-                        request.statusText = response.statusText;
-                        request.end = Date.now();
-                        request.duration = request.end - start;
+    const origFetch = window.fetch;
+    window.fetch = async function(...args) {
+        const start = Date.now();
+        const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
+        const method = (args[1] && args[1].method) || 'GET';
+        const request = {
+            id: 'fetch-' + Math.random().toString(36).substring(2, 10),
+            url: url,
+            method: method,
+            type: 'fetch',
+            headers: args[1] && args[1].headers ? args[1].headers : {},
+            start: start,
+        };
+        if (args[1] && args[1].body) request.body = args[1].body;
 
-                        try {
-                            const ct = response.headers.get('content-type') || '';
-                            if (ct.includes('json')) {
-                                request.responseBody = await cloned.json();
-                            } else if (ct.includes('text') || ct.includes('xml') || ct.includes('html')) {
-                                const text = await cloned.text();
-                                request.responseBody = text.substring(0, 10000);
-                            }
-                        } catch(e) {}
+        try {
+            const response = await origFetch.apply(this, args);
+            const cloned = response.clone();
+            request.status = response.status;
+            request.statusText = response.statusText;
+            request.end = Date.now();
+            request.duration = request.end - start;
 
-                        window.__freeact_network_log.push(request);
-                        return response;
-                    } catch(err) {
-                        request.error = err.message;
-                        request.status = 0;
-                        request.end = Date.now();
-                        window.__freeact_network_log.push(request);
-                        throw err;
-                    }
-                };
+            try {
+                const ct = response.headers.get('content-type') || '';
+                if (ct.includes('json')) {
+                    request.responseBody = await cloned.json();
+                } else if (ct.includes('text') || ct.includes('xml') || ct.includes('html')) {
+                    const text = await cloned.text();
+                    request.responseBody = text.substring(0, 10000);
+                }
+            } catch(e) {}
 
-                const origXHROpen = XMLHttpRequest.prototype.open;
-                const origXHRSend = XMLHttpRequest.prototype.send;
-
-                XMLHttpRequest.prototype.open = function(method, url) {
-                    this.__fract_req = {
-                        id: 'xhr-' + Math.random().toString(36).substring(2, 10),
-                        url: url.toString(),
-                        method: method,
-                        type: 'xhr',
-                        start: Date.now(),
-                    };
-                    return origXHROpen.apply(this, arguments);
-                };
-
-                XMLHttpRequest.prototype.send = function(body) {
-                    if (this.__fract_req) {
-                        this.__fract_req.body = body;
-                    }
-                    this.addEventListener('load', function() {
-                        if (this.__fract_req) {
-                            this.__fract_req.status = this.status;
-                            this.__fract_req.statusText = this.statusText;
-                            this.__fract_req.end = Date.now();
-                            this.__fract_req.duration = this.__fract_req.end - this.__fract_req.start;
-                            const ct = this.getResponseHeader('content-type') || '';
-                            try {
-                                if (ct.includes('json')) {
-                                    this.__fract_req.responseBody = JSON.parse(this.responseText);
-                                } else {
-                                    this.__fract_req.responseBody = this.responseText.substring(0, 10000);
-                                }
-                            } catch(e) {
-                                this.__fract_req.responseBody = this.responseText.substring(0, 10000);
-                            }
-                            window.__freeact_network_log.push(this.__fract_req);
-                        }
-                    });
-                    this.addEventListener('error', function() {
-                        if (this.__fract_req) {
-                            this.__fract_req.error = 'Network error';
-                            this.__fract_req.status = 0;
-                            window.__freeact_network_log.push(this.__fract_req);
-                        }
-                    });
-                    return origXHRSend.apply(this, arguments);
-                };
+            window.__freeact_network_log.push(request);
+            const max = window.__freeact_network_max || 500;
+            if (window.__freeact_network_log.length > max) {
+                window.__freeact_network_log = window.__freeact_network_log.slice(-max);
             }
+            return response;
+        } catch(err) {
+            request.error = err.message;
+            request.status = 0;
+            request.end = Date.now();
+            request.duration = request.end - start;
+            window.__freeact_network_log.push(request);
+            throw err;
         }
-    """
-    )
+    };
+
+    const origXHROpen = XMLHttpRequest.prototype.open;
+    const origXHRSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function(method, url) {
+        this.__fract_req = {
+            id: 'xhr-' + Math.random().toString(36).substring(2, 10),
+            url: url.toString(),
+            method: method,
+            type: 'xhr',
+            start: Date.now(),
+        };
+        return origXHROpen.apply(this, arguments);
+    };
+
+    XMLHttpRequest.prototype.send = function(body) {
+        if (this.__fract_req) {
+            this.__fract_req.body = body;
+        }
+        this.addEventListener('load', function() {
+            if (this.__fract_req) {
+                this.__fract_req.status = this.status;
+                this.__fract_req.statusText = this.statusText;
+                this.__fract_req.end = Date.now();
+                this.__fract_req.duration = this.__fract_req.end - this.__fract_req.start;
+                const ct = this.getResponseHeader('content-type') || '';
+                try {
+                    if (ct.includes('json')) {
+                        this.__fract_req.responseBody = JSON.parse(this.responseText);
+                    } else {
+                        this.__fract_req.responseBody = this.responseText.substring(0, 10000);
+                    }
+                } catch(e) {
+                    this.__fract_req.responseBody = this.responseText.substring(0, 10000);
+                }
+                window.__freeact_network_log.push(this.__fract_req);
+            }
+        });
+        this.addEventListener('error', function() {
+            if (this.__fract_req) {
+                this.__fract_req.error = 'Network error';
+                this.__fract_req.status = 0;
+                window.__freeact_network_log.push(this.__fract_req);
+            }
+        });
+        return origXHRSend.apply(this, arguments);
+    };
+}
+"""
+
+
+async def start_network_monitoring(page: Page, max_entries: int = 500):
+    await page.evaluate(_NETWORK_INIT % max_entries)
 
 
 async def get_network_requests(
@@ -119,11 +128,13 @@ async def get_network_requests(
     status: str | None = None,
     clear: bool = False,
 ) -> str:
+    await start_network_monitoring(page)
+
     result = await page.evaluate(
         f"""
         () => {{
             if (!window.__freeact_network_log) return [];
-            let requests = window.__freeact_network_log;
+            let requests = [...window.__freeact_network_log];
 
             const filter = {json.dumps(url_filter)};
             const typeFilter = {json.dumps(types)};
@@ -132,7 +143,7 @@ async def get_network_requests(
             const shouldClear = {json.dumps(clear)};
 
             if (filter) {{
-                requests = requests.filter(r => r.url.includes(filter));
+                requests = requests.filter(r => r.url && r.url.includes(filter));
             }}
             if (typeFilter) {{
                 const types = typeFilter.split(',').map(t => t.trim());
@@ -211,8 +222,6 @@ async def get_network_request_detail(page: Page, request_index: int) -> str:
     if not result:
         return "Request not found"
 
-    import json
-
     lines = [
         f"Request [{result['id']}]:",
         f"  URL: {result['url']}",
@@ -227,12 +236,13 @@ async def get_network_request_detail(page: Page, request_index: int) -> str:
 
     if result.get("headers"):
         lines.append("  Headers:")
-        for k, v in result["headers"].items():
-            lines.append(f"    {k}: {v}")
+        if isinstance(result["headers"], dict):
+            for k, v in result["headers"].items():
+                lines.append(f"    {k}: {v}")
 
     if result.get("body"):
-        body_str = result["body"]
-        if isinstance(body_str, str) and len(body_str) > 500:
+        body_str = str(result["body"])
+        if len(body_str) > 500:
             body_str = body_str[:500] + "..."
         lines.append(f"  Request Body: {body_str}")
 
@@ -240,9 +250,10 @@ async def get_network_request_detail(page: Page, request_index: int) -> str:
         resp = result["responseBody"]
         if isinstance(resp, (dict, list)):
             resp = json.dumps(resp, indent=2, ensure_ascii=False)
-        if isinstance(resp, str) and len(resp) > 2000:
-            resp = resp[:2000] + "..."
-        lines.append(f"  Response Body: {resp}")
+        resp_str = str(resp)
+        if len(resp_str) > 2000:
+            resp_str = resp_str[:2000] + "..."
+        lines.append(f"  Response Body: {resp_str}")
 
     return "\n".join(lines)
 

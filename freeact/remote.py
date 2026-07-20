@@ -5,9 +5,7 @@ Two modes:
 2. CDP proxy — remote debug URL for cross-device control (via WebSocket proxy)
 """
 
-import asyncio
 import threading
-from typing import Optional
 
 from playwright.async_api import Page
 
@@ -34,10 +32,8 @@ async def start_remote_assist(page: Page, objective: str = "") -> dict:
 
     is_headless = await page.evaluate("window.navigator.webdriver === undefined")
 
-    cdp_session = None
     try:
-        cdp = await page.context.new_cdp_session(page)
-        cdp_session = cdp
+        await page.context.new_cdp_session(page)
     except Exception:
         pass
 

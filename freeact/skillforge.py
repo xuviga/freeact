@@ -12,8 +12,6 @@ Output format:
     └── requirements.txt  — dependencies
 """
 
-import json
-import os
 from pathlib import Path
 from typing import Optional
 
@@ -77,8 +75,6 @@ def _generate_skill_script(
         f'    parser.add_argument("--{p}", type=str, default="", help="{param_help.get(p, "")}")'
         for p in param_names
     )
-
-    params_usage = ", ".join(f'--{p} "{{{{{{{{{{{p}}}}}}}}}}}"' for p in param_names)
 
     js_escaped = extraction_js.replace("\\", "\\\\").replace("`", "\\`").replace("$", "\\$")
 

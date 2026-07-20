@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "freeact-cli"
-version = "0.3.1"
+version = "0.4.0"
 description = "Free Browser Agent CLI — undetectable browser automation for AI agents. Controls your real browser via CDP."
 readme = "README.md"
 license = {text = "MIT"}
@@ -46,9 +46,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-stealth = [
-    "playwright-stealth>=1.0.6",
-]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",

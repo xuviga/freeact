@@ -9,13 +9,9 @@ Strategy (tried in order):
 """
 
 import asyncio
-import base64
-import io
 import os
 import random
 import tempfile
-import time
-from typing import Optional
 
 from playwright.async_api import Page
 

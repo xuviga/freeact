@@ -5,19 +5,20 @@ The user sees everything the agent does in real-time.
 All tabs, cookies, logins, and sessions are preserved.
 """
 
-import asyncio
 import json
 import subprocess
 import time
 from pathlib import Path
 from typing import Optional
 
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
+from playwright.async_api import async_playwright
 
 from freeact.config import FREACT_HOME
 
 LIVE_CONFIG = FREACT_HOME / "live_browser.json"
 CDP_DEFAULT_PORT = 9222
+
+_live_procs: list[subprocess.Popen] = []
 
 
 def get_live_config() -> dict:
@@ -112,7 +113,8 @@ def launch_browser_with_cdp(browser_type: str = "chrome", port: int = CDP_DEFAUL
     ]
 
     try:
-        subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _live_procs.append(proc)
     except Exception:
         return None
 
@@ -304,7 +306,6 @@ def setup_browser_cdp(browser_type: str = "yandex", port: int = CDP_DEFAULT_PORT
     User double-clicks this shortcut for daily browsing, freeact connects anytime.
     """
     from freeact.browser import find_browser
-    import os
 
     info = find_browser(browser_type)
     if not info:
@@ -314,10 +315,20 @@ def setup_browser_cdp(browser_type: str = "yandex", port: int = CDP_DEFAULT_PORT
     name = info["name"]
     profile = str(info["profile"])
 
+    import sys
+
+    if sys.platform == "win32":
+        return _setup_shortcut_windows(exe, name, profile, port)
+    elif sys.platform == "darwin":
+        return _setup_shortcut_macos(exe, name, profile, port)
+    else:
+        return _setup_shortcut_linux(exe, name, profile, port)
+
+
+def _setup_shortcut_windows(exe: str, name: str, profile: str, port: int) -> dict:
+    import subprocess as sp
     desktop = Path.home() / "Desktop"
     shortcut_path = desktop / f"{name} (FreeAct).lnk"
-
-    import subprocess as sp
 
     ps_script = f'''
 $WScriptShell = New-Object -ComObject WScript.Shell
@@ -343,9 +354,73 @@ Write-Output "Shortcut created"
                 "message": (
                     f"Desktop shortcut created: {name} (FreeAct).lnk\n"
                     f"Use THIS shortcut for daily browsing.\n"
-                    f"Then run 'freeact connect' anytime — it will connect without restarting."
+                    f"Then run 'freeact connect' anytime."
                 ),
             }
         return {"ok": False, "error": result.stderr or "Failed to create shortcut"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _setup_shortcut_macos(exe: str, name: str, profile: str, port: int) -> dict:
+    import stat
+    desktop = Path.home() / "Desktop"
+    app_name = f"{name} (FreeAct).app"
+    app_path = desktop / app_name
+    macos_dir = app_path / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True, exist_ok=True)
+
+    launcher = macos_dir / "launch.sh"
+    launcher.write_text(f'#!/bin/bash\n'
+                        f'exec "{exe}" --remote-debugging-port={port} '
+                        f'--user-data-dir="{profile}" '
+                        f'--restore-last-session --no-first-run --no-default-browser-check\n')
+    launcher.chmod(launcher.stat().st_mode | stat.S_IEXEC)
+
+    plist = app_path / "Contents" / "Info.plist"
+    plist.write_text(f'''<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>launch.sh</string>
+    <key>CFBundleName</key>
+    <string>{name} (FreeAct)</string>
+</dict>
+</plist>''')
+
+    return {
+        "ok": True,
+        "shortcut": str(app_path),
+        "message": (
+            f"Desktop app created: {app_name}\n"
+            f"Use THIS app for daily browsing.\n"
+            f"Then run 'freeact connect' anytime."
+        ),
+    }
+
+
+def _setup_shortcut_linux(exe: str, name: str, profile: str, port: int) -> dict:
+    desktop_dir = Path.home() / ".local" / "share" / "applications"
+    desktop_dir.mkdir(parents=True, exist_ok=True)
+    desktop_file = desktop_dir / f"freeact-{name.lower()}.desktop"
+
+    desktop_file.write_text(f'''[Desktop Entry]
+Type=Application
+Name={name} (FreeAct)
+Comment={name} with FreeAct CDP — agent can connect anytime
+Exec={exe} --remote-debugging-port={port} --user-data-dir="{profile}" --restore-last-session --no-first-run --no-default-browser-check
+Terminal=false
+Categories=Network;WebBrowser;
+''')
+
+    return {
+        "ok": True,
+        "shortcut": str(desktop_file),
+        "message": (
+            f"Desktop entry created: {desktop_file}\n"
+            f"Use this launcher for daily browsing.\n"
+            f"Then run 'freeact connect' anytime."
+        ),
+    }

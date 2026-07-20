@@ -1,9 +1,30 @@
-"""Data extraction — get markdown, HTML, text, title, and screenshots."""
+"""Data extraction — get markdown, HTML, text, title, and screenshots.
 
-import base64
+Stability fix: turndown.js is loaded from local bundle (no CDN dependency).
+Uses state engine to locate elements by index.
+"""
+
 import io
+from pathlib import Path
 from playwright.async_api import Page
 from PIL import Image
+
+from freeact.state import get_element_selector
+
+_TURNDOWN_JS = (Path(__file__).parent / "turndown.js").read_text(encoding="utf-8")
+
+_TURNDOWN_LOADER = f"""
+() => {{
+    if (window.__freeact_turndown) return true;
+    try {{
+        {_TURNDOWN_JS}
+        window.__freeact_turndown = TurndownService;
+        return true;
+    }} catch(e) {{
+        return false;
+    }}
+}}
+"""
 
 
 async def get_title(page: Page) -> str:
@@ -21,34 +42,34 @@ async def get_html(page: Page, selector: str | None = None) -> str:
 
 async def get_markdown(page: Page) -> str:
     try:
+        await page.evaluate(_TURNDOWN_LOADER)
         result = await page.evaluate(
             """
-            async () => {
-                const html = document.documentElement.outerHTML;
-                if (typeof turndownService === 'undefined') {
-                    const TurndownService = await import('https://unpkg.com/turndown@7/dist/turndown.js');
-                    window.TurndownService = TurndownService.default || TurndownService;
-                }
-                const ts = new window.TurndownService({
+            () => {
+                if (!window.__freeact_turndown) return null;
+                const ts = new window.__freeact_turndown({
                     headingStyle: 'atx',
                     codeBlockStyle: 'fenced',
                 });
                 ts.remove(['script', 'style', 'noscript', 'svg', 'meta', 'link']);
-                return ts.turndown(html);
+                return ts.turndown(document.documentElement.outerHTML);
             }
         """
         )
-        return result
+        if result is not None:
+            return result
     except Exception:
-        from markdownify import markdownify as md
+        pass
 
+    try:
+        from markdownify import markdownify as md
         html_content = await page.content()
         return md(html_content, heading_style="ATX")
+    except Exception:
+        return await page.content()
 
 
 async def get_element_text(page: Page, index: int) -> str:
-    from freeact.interaction import get_element_selector
-
     selector = await get_element_selector(page, index)
     if not selector:
         return f"Error: element at index {index} not found"
@@ -60,15 +81,16 @@ async def get_element_text(page: Page, index: int) -> str:
 
 
 async def get_element_value(page: Page, index: int) -> str:
-    from freeact.interaction import get_element_selector
-
     selector = await get_element_selector(page, index)
     if not selector:
         return f"Error: element at index {index} not found"
     try:
         return await page.locator(selector).first.input_value()
-    except Exception as e:
-        return f"Error: {e}"
+    except Exception:
+        try:
+            return await page.locator(selector).first.get_attribute("value") or ""
+        except Exception as e:
+            return f"Error: {e}"
 
 
 async def take_screenshot(page: Page, path: str | None = None, full_page: bool = False) -> str:
@@ -91,8 +113,7 @@ async def evaluate_js(page: Page, js: str) -> str:
             return "undefined"
         if isinstance(result, (dict, list)):
             import json
-
-            return json.dumps(result, indent=2, ensure_ascii=False)
+            return json.dumps(result, indent=2, ensure_ascii=False, default=str)
         return str(result)
     except Exception as e:
         return f"Error evaluating JS: {e}"

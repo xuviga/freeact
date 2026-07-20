@@ -1,78 +1,22 @@
-"""Anti-detection stealth patches for Playwright."""
+"""Anti-detection stealth patches for Playwright.
 
-import asyncio
-import random
-import string
+Stability fix: single comprehensive init script, no duplicate patches.
+Applied once per context. Canvas noise only for small canvases (performance).
+"""
 
 from playwright.async_api import BrowserContext
 
 
-STEALTH_SCRIPTS = [
-    """
+STEALTH_INIT_SCRIPT = """
 () => {
-    Object.defineProperty(navigator, 'webdriver', {
-        get: () => undefined,
-    });
-    Object.defineProperty(navigator, 'plugins', {
-        get: () => [1, 2, 3, 4, 5],
-    });
-    Object.defineProperty(navigator, 'languages', {
-        get: () => ['en-US', 'en'],
-    });
-    Object.defineProperty(navigator, 'platform', {
-        get: () => 'Win32',
-    });
-    Object.defineProperty(navigator, 'hardwareConcurrency', {
-        get: () => 8,
-    });
-    Object.defineProperty(navigator, 'deviceMemory', {
-        get: () => 8,
-    });
-    window.chrome = {
-        runtime: {},
-        loadTimes: function() {},
-        csi: function() {},
-        app: {},
-    };
-    Object.defineProperty(navigator, 'permissions', {
-        get: () => ({
-            query: async () => ({ state: 'prompt' }),
-        }),
-    });
-}
-""",
-    """
-() => {
-    const getParameter = WebGLRenderingContext.prototype.getParameter;
-    WebGLRenderingContext.prototype.getParameter = function(parameter) {
-        if (parameter === 37445) {
-            return 'Intel Inc.';
-        }
-        if (parameter === 37446) {
-            return 'Intel Iris OpenGL Engine';
-        }
-        return getParameter.call(this, parameter);
-    };
-}
-""",
-    """
-() => {
-    if (Notification && Notification.permission === 'default') {
-        Notification.requestPermission = () => Promise.resolve('default');
-    }
-}
-""",
-]
+    if (window.__freeact_stealth_applied) return;
+    window.__freeact_stealth_applied = true;
 
-
-async def apply_stealth_patches(context: BrowserContext) -> None:
-    await context.add_init_script(
-        """
     // Hide automation indicators
     delete Object.getPrototypeOf(navigator).webdriver;
     Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
 
-    // Override plugins
+    // Override plugins with realistic array
     Object.defineProperty(navigator, 'plugins', {
         get: () => {
             const plugins = [
@@ -80,11 +24,13 @@ async def apply_stealth_patches(context: BrowserContext) -> None:
                 {name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: ''},
                 {name: 'Native Client', filename: 'internal-nacl-plugin', description: ''},
             ];
-            plugins.item = (i) => plugins[i];
+            plugins.item = (i) => plugins[i] || null;
             plugins.namedItem = (name) => plugins.find(p => p.name === name) || null;
             plugins.refresh = () => {};
-            return Object.setPrototypeOf(plugins, PluginArray.prototype);
-        }
+            Object.setPrototypeOf(plugins, PluginArray.prototype);
+            return plugins;
+        },
+        configurable: true,
     });
 
     // Override languages
@@ -97,35 +43,37 @@ async def apply_stealth_patches(context: BrowserContext) -> None:
     Object.defineProperty(navigator, 'hardwareConcurrency', {get: () => 8});
 
     // Override device memory
-    Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+    if ('deviceMemory' in navigator) {
+        Object.defineProperty(navigator, 'deviceMemory', {get: () => 8});
+    }
 
     // Fake chrome runtime
     window.chrome = {
-        runtime: {onConnect: {addListener: () => {}}, onMessage: {addListener: () => {}}},
+        runtime: {
+            onConnect: {addListener: () => {}},
+            onMessage: {addListener: () => {}},
+        },
         loadTimes: () => {},
         csi: () => {},
         app: {},
     };
 
-    // Override permissions
+    // Override permissions query
     const originalQuery = window.navigator.permissions.query;
     window.navigator.permissions.query = (parameters) => (
         parameters.name === 'notifications' ?
-            Promise.resolve({state: Notification.permission}) :
+            Promise.resolve({state: Notification.permission || 'prompt'}) :
             originalQuery(parameters)
     );
 
-    // Canvas fingerprint randomization
+    // Canvas fingerprint randomization (only for small canvases to avoid perf hit)
     const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
-    const originalToBlob = HTMLCanvasElement.prototype.toBlob;
-    const randomNoise = () => Math.random() * 0.1;
-
     HTMLCanvasElement.prototype.toDataURL = function(...args) {
         const ctx = this.getContext('2d');
-        if (ctx) {
+        if (ctx && this.width > 0 && this.height > 0 && this.width * this.height <= 100000) {
             const imageData = ctx.getImageData(0, 0, this.width, this.height);
             for (let i = 0; i < imageData.data.length; i += 4) {
-                imageData.data[i] = Math.min(255, Math.max(0, imageData.data[i] + randomNoise()));
+                imageData.data[i] = Math.min(255, Math.max(0, imageData.data[i] + (Math.random() * 0.1 - 0.05)));
             }
             ctx.putImageData(imageData, 0, 0);
         }
@@ -142,11 +90,26 @@ async def apply_stealth_patches(context: BrowserContext) -> None:
         };
     } catch(e) {}
 
-    // Batched: hide key webdriver properties that get detected most
+    // Ensure document visibility shows as visible
     Object.defineProperty(document, 'hidden', {get: () => false});
     Object.defineProperty(document, 'visibilityState', {get: () => 'visible'});
-"""
-    )
 
-    for script in STEALTH_SCRIPTS:
-        await context.add_init_script(script)
+    // Override Notification.requestPermission to avoid popups
+    if (window.Notification && Notification.permission === 'default') {
+        Notification.requestPermission = () => Promise.resolve('default');
+    }
+
+    // Fix for headless detection via chrome.runtime
+    if (!window.chrome || !window.chrome.runtime) {
+        window.chrome = window.chrome || {};
+        window.chrome.runtime = {
+            onConnect: {addListener: () => {}},
+            onMessage: {addListener: () => {}},
+        };
+    }
+}
+"""
+
+
+async def apply_stealth_patches(context: BrowserContext) -> None:
+    await context.add_init_script(STEALTH_INIT_SCRIPT)

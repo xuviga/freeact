@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>The Browser Tamer's Field Guide &mdash; freeact v0.3.1</title>
+<link href="https://fonts.googleapis.com/css2?family=Special+Elite&family=Cutive+Mono&family=Homemade+Apple&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#2a241e;color:#e8dcc8;font-family:'Special Elite',monospace;line-height:1.7;overflow-x:hidden}
+body::before{content:'';position:fixed;top:0;left:0;right:0;bottom:0;background:radial-gradient(ellipse at 20% 10%,rgba(139,109,71,.12) 0%,transparent 60%),radial-gradient(ellipse at 80% 90%,rgba(139,109,71,.08) 0%,transparent 60%),url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence baseFrequency='.65' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.03'/%3E%3C/svg%3E");pointer-events:none;z-index:0}
+
+.container{max-width:860px;margin:0 auto;padding:3rem 2rem;position:relative;z-index:1}
+
+.cover{text-align:center;padding:6rem 0 4rem;position:relative}
+.cover::before{content:'';position:absolute;top:2rem;left:15%;right:15%;bottom:1rem;border:3px solid #8b6d47;border-image:repeating-linear-gradient(0deg,#8b6d47,#8b6d47 8px,transparent 8px,transparent 12px,#6b4e2e 12px,#6b4e2e 20px,transparent 20px,transparent 24px) 30;opacity:.4}
+.cover-emblem{font-size:5rem;margin-bottom:1rem;filter:drop-shadow(2px 2px 0 #6b4e2e)}
+.cover h1{font-family:'Homemade Apple',cursive;font-size:2.4rem;color:#c4a56e;margin-bottom:.5rem;transform:rotate(-1deg)}
+.cover .subtitle{font-size:.95rem;color:#8b7355;letter-spacing:.15em;text-transform:uppercase}
+.cover .stamp{display:inline-block;padding:.3rem 1rem;border:3px double #8b6d47;color:#c46a4a;font-size:.75rem;transform:rotate(3deg);margin-top:1.5rem;opacity:.7}
+.cover .stamp span{font-family:'Cutive Mono',monospace;font-size:.65rem}
+
+.divider{text-align:center;margin:2rem 0;color:#6b4e2e;font-family:'Cutive Mono',monospace;font-size:.7rem;letter-spacing:.5em}
+.divider::after{content:'';display:block;width:120px;height:2px;background:linear-gradient(90deg,transparent,#6b4e2e,transparent);margin:.5rem auto 0}
+
+.section{margin:3rem 0;position:relative}
+.section-tag{display:inline-block;background:#3a2a1a;color:#c4a56e;padding:.2rem .8rem;font-size:.65rem;letter-spacing:.2em;margin-bottom:1rem;border-left:3px solid #8b6d47}
+.section h2{font-family:'Homemade Apple',cursive;font-size:1.6rem;color:#c4a56e;margin-bottom:1.5rem;transform:rotate(-.5deg)}
+
+.field-note{background:linear-gradient(135deg,#363024 0%,#2d261d 100%);border:1px solid #4a3a2a;padding:1.8rem 2rem;margin:1.5rem 0;position:relative;transform:rotate(.2deg);box-shadow:3px 3px 0 rgba(0,0,0,.3),inset 0 0 40px rgba(0,0,0,.1)}
+.field-note:nth-child(odd){transform:rotate(-.3deg)}
+.field-note::before{content:'📎';position:absolute;top:-10px;right:2rem;font-size:1.2rem;transform:rotate(-15deg);opacity:.4}
+.field-note .note-label{font-family:'Cutive Mono',monospace;font-size:.65rem;color:#8b6d47;letter-spacing:.15em;margin-bottom:.8rem;text-transform:uppercase}
+.field-note h3{font-size:1.1rem;color:#d4b87a;margin-bottom:.8rem}
+.field-note .cmd{display:inline-block;background:#1a1510;color:#a0d490;font-family:'Cutive Mono',monospace;font-size:.8rem;padding:.3rem .7rem;margin:.3rem .2rem;border-radius:2px;letter-spacing:.02em}
+.field-note .cmd-arg{color:#d4b87a}
+.field-note .cmd-comment{color:#6b5a3e;font-size:.7rem}
+
+.sticky{background:#f5e6c8;color:#2a241e;padding:1.4rem 1.8rem;margin:2rem 0;position:relative;transform:rotate(1.5deg);box-shadow:4px 4px 12px rgba(0,0,0,.4);font-size:.9rem;width:75%}
+.sticky:nth-child(even){margin-left:auto;transform:rotate(-2deg)}
+.sticky::after{content:'';position:absolute;top:-6px;left:50%;width:40px;height:12px;background:rgba(180,160,120,.3);clip-path:polygon(30% 0,70% 0,100% 100%,0 100%)}
+.sticky h4{font-family:'Homemade Apple',cursive;color:#8b4513;font-size:1rem;margin-bottom:.5rem}
+
+.diagram{background:#1e1a15;border:2px solid #4a3a2a;padding:2rem;margin:2rem 0;font-family:'Cutive Mono',monospace;font-size:.75rem;line-height:1.4;overflow-x:auto}
+.diagram .d-title{color:#8b6d47;margin-bottom:1rem;letter-spacing:.15em}
+.diagram .d-box{border:1px solid #5a4a35;padding:.4rem .8rem;display:inline-block;margin:.2rem;background:#2a2218}
+.diagram .d-arrow{color:#6b5a3e;margin:0 .5rem}
+.diagram .d-high{color:#c4a56e;font-weight:bold}
+
+.creature-card{display:flex;gap:2rem;margin:2rem 0;align-items:flex-start}
+.creature-card .card-left{flex:0 0 180px;text-align:center;font-size:4rem;padding:1rem;background:#1e1a15;border:2px solid #4a3a2a}
+.creature-card .card-right{flex:1}
+.creature-card h3{font-family:'Homemade Apple',cursive;color:#c4a56e;margin-bottom:.8rem}
+
+.warning-box{background:linear-gradient(135deg,#3a2020 0%,#2a1818 100%);border:2px solid #8b3a3a;padding:1.5rem 2rem;margin:2rem 0;position:relative}
+.warning-box::before{content:'⚠';position:absolute;top:-15px;left:1rem;font-size:1.5rem;background:#2a241e;padding:0 .5rem}
+.warning-box h4{color:#d46a6a;margin-bottom:.5rem}
+.warning-box .cmd{background:#1a0a0a;color:#d46a6a}
+
+.field-log{background:#1a1510;border-left:4px solid #8b6d47;padding:1.2rem 1.5rem;margin:1.5rem 0;font-family:'Cutive Mono',monospace;font-size:.72rem;color:#8b7355;white-space:pre-wrap;max-height:300px;overflow-y:auto}
+
+footer{text-align:center;padding:4rem 0 2rem;color:#5a4a35;font-size:.7rem;letter-spacing:.1em;border-top:1px solid #3a2a1a;margin-top:3rem}
+footer .sig{font-family:'Homemade Apple',cursive;font-size:1.1rem;color:#8b6d47;margin-top:.5rem}
+
+@media(max-width:640px){
+.container{padding:1.5rem 1rem}
+.cover h1{font-size:1.6rem}
+.field-note{padding:1.2rem 1rem}
+.sticky{width:90%}
+.creature-card{flex-direction:column}
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- COVER -->
+<div class="cover">
+  <div class="cover-emblem">🕷️</div>
+  <h1>The Browser Tamer's<br>Field Guide</h1>
+  <p class="subtitle">Volume III — freeact v0.3.1</p>
+  <p style="color:#8b7355;font-size:.8rem;margin-top:.5rem">A Practical Manual for the Domestication<br>of Semi-Sentient Web Browsers</p>
+  <div class="stamp">CLASSIFIED — AGENT EYES ONLY <span>REF: FRCT-031</span></div>
+</div>
+
+<div class="divider">※ &nbsp; P A R T &nbsp; O N E &nbsp; : &nbsp; C R E A T U R E &nbsp; L O R E &nbsp; ※</div>
+
+<!-- CREATURES -->
+<div class="section">
+  <span class="section-tag">FIELD OBSERVATION</span>
+  <h2>On the Nature of Browsers</h2>
+
+  <p style="color:#a09070;margin-bottom:2rem;font-size:.9rem">
+    Browsers are not tools. They are <em>creatures</em> — vast, semi-sentient rendering engines that evolved to display the Web. Each has its own temperament, nesting habits, and susceptibility to domestication. freeact is the art of taming them.
+  </p>
+
+  <div class="creature-card">
+    <div class="card-left" style="font-size:3.5rem">🦊</div>
+    <div class="card-right">
+      <h3>Yandex Browser <span style="font-size:.7rem;color:#8b6d47">— The Alpha Tamer</span></h3>
+      <p style="color:#a09070;font-size:.85rem">The most docile of the browser creatures. Native to colder climates. Exhibits natural resistance to anti-bot predators. When properly tamed, passes CloudFront checkpoints without raising suspicion. <strong style="color:#c4a56e">This is your primary mount.</strong></p>
+      <p style="font-size:.7rem;color:#6b5a3e;margin-top:.5rem">Nesting: <span class="cmd">%LOCALAPPDATA%\Yandex\YandexBrowser\User Data</span></p>
+      <p style="font-size:.7rem;color:#6b5a3e">Call: <span class="cmd">browser.exe</span></p>
+    </div>
+  </div>
+
+  <div class="creature-card" style="opacity:.4">
+    <div class="card-left" style="font-size:3.5rem">🦎</div>
+    <div class="card-right">
+      <h3>Chrome / Edge <span style="font-size:.7rem;color:#8b6d47">— REMOVED FROM MENAGERIE</span></h3>
+      <p style="color:#a09070;font-size:.85rem"><del>Previously kept for diversity. Proved unreliable against CloudFront sentinels. All specimens released back into the wild. Five Yandex-only profiles remain in the stables.</del></p>
+    </div>
+  </div>
+</div>
+
+<div class="divider">※ &nbsp; P A R T &nbsp; T W O &nbsp; : &nbsp; T A M I N G &nbsp; R I T U A L S &nbsp; ※</div>
+
+<!-- QUICK START -->
+<div class="section">
+  <span class="section-tag">RITUAL #1</span>
+  <h2>The Awakening</h2>
+
+  <div class="field-note">
+    <div class="note-label">OBSERVATION LOG — Day 1</div>
+    <p style="color:#a09070;font-size:.85rem;margin-bottom:1rem">The browser creature must first be roused from slumber. The daemon serves as its eternal perch — a spirit that keeps the creature alive between commands, eliminating the painful ritual of rebirth each time.</p>
+
+    <p style="color:#8b7355;font-size:.75rem;margin-bottom:.5rem">Summon the daemon spirit:</p>
+    <span class="cmd">freeact daemon start</span>
+    <span class="cmd-comment">← spoken once per session</span>
+
+    <p style="color:#8b7355;font-size:.75rem;margin:1rem 0 .5rem">Bind a creature to a name:</p>
+    <span class="cmd">freeact --session <span class="cmd-arg">mytask</span> browser open <span class="cmd-arg">DSYandex</span> <span class="cmd-arg">https://example.com</span></span>
+
+    <p style="color:#8b7355;font-size:.75rem;margin:1rem 0 .5rem">Observe the creature's form:</p>
+    <span class="cmd">freeact --session <span class="cmd-arg">mytask</span> state</span>
+    <span class="cmd-comment">← reveals all visible appendages</span>
+  </div>
+
+  <div class="sticky">
+    <h4>⚠ Tamer's First Law</h4>
+    <p>After every interaction, the creature's form <strong>mutates</strong>. Indices shift. Elements vanish. New growths appear. <strong style="color:#c46a4a">Always observe (state) before touching (click/input).</strong> Never assume an index survives between observations.</p>
+  </div>
+</div>
+
+<!-- INTERACTION -->
+<div class="section">
+  <span class="section-tag">RITUAL #2</span>
+  <h2>Creature Whispering</h2>
+
+  <div class="field-note">
+    <div class="note-label">TAMING SEQUENCE — Proven Pattern</div>
+    <div class="diagram">
+      <div class="d-title">THE SACRED CYCLE</div>
+      <span class="d-box">state</span><span class="d-arrow">→</span>
+      <span class="d-box">interact</span><span class="d-arrow">→</span>
+      <span class="d-box">wait stable</span><span class="d-arrow">→</span>
+      <span class="d-box d-high">state</span>
+      <p style="color:#6b5a3e;margin-top:1rem;font-size:.7rem">Break this cycle at your peril. The creature will reject your touch if you skip observation.</p>
+    </div>
+  </div>
+
+  <div class="field-note">
+    <div class="note-label">WHISPER COMMANDS — Appendage Interaction</div>
+    <table style="width:100%;font-size:.78rem;color:#a09070;border-collapse:collapse">
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Poke</td><td><span class="cmd">click <span class="cmd-arg">5</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Index from state output</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Feed text</td><td><span class="cmd">input <span class="cmd-arg">3 "hello"</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Reacts to React, Vue, vanilla</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Hover</td><td><span class="cmd">hover <span class="cmd-arg">2</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Triggers dropdowns, tooltips</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Press key</td><td><span class="cmd">keys <span class="cmd-arg">"Enter"</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Enter, Tab, Escape...</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Scroll</td><td><span class="cmd">scroll <span class="cmd-arg">down</span></span></td><td style="color:#6b5a3e;font-size:.7rem">up/down, --amount 1000</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Select</td><td><span class="cmd">select <span class="cmd-arg">4 "Option"</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Dropdown choice</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Upload</td><td><span class="cmd">upload <span class="cmd-arg">8 ./file.pdf</span></span></td><td style="color:#6b5a3e;font-size:.7rem">File input elements</td></tr>
+    </table>
+  </div>
+
+  <div class="field-note">
+    <div class="note-label">RETRY MECHANISM — The Creature Resists</div>
+    <p style="color:#a09070;font-size:.8rem">Each whisper is attempted <strong>3 times</strong> with escalating force:</p>
+    <p style="color:#8b7355;font-size:.75rem;margin-top:.5rem">
+      Attempt 1 → Playwright normal click<br>
+      Attempt 2 → Force click (ignores overlays)<br>
+      Attempt 3 → dispatchEvent('click') → JS el.click()
+    </p>
+    <p style="color:#6b5a3e;font-size:.7rem;margin-top:.5rem">Inputs use nativeInputValueSetter for React compatibility. Exponential backoff: 0.3s → 0.6s → 1.2s.</p>
+  </div>
+</div>
+
+<!-- EXTRACTION -->
+<div class="section">
+  <span class="section-tag">RITUAL #3</span>
+  <h2>Harvesting the Essence</h2>
+
+  <div class="field-note">
+    <div class="note-label">EXTRACTION INCANTATIONS</div>
+    <table style="width:100%;font-size:.78rem;color:#a09070;border-collapse:collapse">
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Soul-reading</td><td><span class="cmd">get markdown</span></td><td style="color:#6b5a3e;font-size:.7rem">Full page as markdown (turndown.js, local)</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Flesh</td><td><span class="cmd">get html</span></td><td style="color:#6b5a3e;font-size:.7rem">Raw HTML, --selector for parts</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Name</td><td><span class="cmd">get title</span></td><td style="color:#6b5a3e;font-size:.7rem">Document title</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Whisper</td><td><span class="cmd">get text <span class="cmd-arg">7</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Visible text of element</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Blood</td><td><span class="cmd">get value <span class="cmd-arg">3</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Input current value</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Portrait</td><td><span class="cmd">screenshot</span></td><td style="color:#6b5a3e;font-size:.7rem">PNG capture, --full for full page</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#8b6d47">Mind-probe</td><td><span class="cmd">eval <span class="cmd-arg">"js code"</span></span></td><td style="color:#6b5a3e;font-size:.7rem">Arbitrary JavaScript execution</td></tr>
+    </table>
+  </div>
+
+  <div class="field-note">
+    <div class="note-label">NETWORK INTERCEPTION — Following the Creature's Thoughts</div>
+    <p style="color:#a09070;font-size:.8rem">Every fetch() and XMLHttpRequest is silently captured. No page.route() overhead — pure JS interception. View the creature's communication:</p>
+    <span class="cmd">network requests</span> <span class="cmd-comment">← list all captured</span><br>
+    <span class="cmd">network requests --filter api.example.com --type xhr --method POST</span><br>
+    <span class="cmd">network request <span class="cmd-arg">3</span></span> <span class="cmd-comment">← full detail: headers, body, response</span><br>
+    <span class="cmd">network clear</span> <span class="cmd-comment">← purge the log</span>
+    <p style="color:#6b5a3e;font-size:.7rem;margin-top:.5rem">Log stores up to <span class="cmd">max_network_entries</span> (default 500). JSON responses auto-parsed. Text truncated at 10KB.</p>
+  </div>
+</div>
+
+<div class="divider">※ &nbsp; P A R T &nbsp; T H R E E &nbsp; : &nbsp; S T E A L T H &nbsp; &nbsp; &amp; &nbsp; &nbsp; D E F E N S E &nbsp; ※</div>
+
+<!-- STEALTH -->
+<div class="section">
+  <span class="section-tag">CAMOUFLAGE</span>
+  <h2>The Invisibility Cloak</h2>
+
+  <div class="field-note">
+    <div class="note-label">15 LAYERS OF DECEPTION</div>
+    <p style="color:#a09070;font-size:.8rem;margin-bottom:1rem">The creature wears a shroud woven from these illusions. Applied once per context, never duplicated:</p>
+    <table style="width:100%;font-size:.72rem;color:#8b7355;border-collapse:collapse">
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">1.</td><td>navigator.webdriver</td><td style="color:#6b5a3e">deleted from prototype</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">2.</td><td>navigator.plugins</td><td style="color:#6b5a3e">Chrome PDF Plugin, PDF Viewer, Native Client</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">3.</td><td>navigator.languages</td><td style="color:#6b5a3e">['en-US', 'en']</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">4.</td><td>navigator.platform</td><td style="color:#6b5a3e">Win32</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">5.</td><td>hardwareConcurrency</td><td style="color:#6b5a3e">8 cores</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">6.</td><td>deviceMemory</td><td style="color:#6b5a3e">8 GB</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">7.</td><td>window.chrome.runtime</td><td style="color:#6b5a3e">faked listeners</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">8.</td><td>Permissions API</td><td style="color:#6b5a3e">notification bypass</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">9.</td><td>Canvas fingerprint</td><td style="color:#6b5a3e">±0.05 noise per pixel (≤100K px)</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">10.</td><td>WebGL vendor</td><td style="color:#6b5a3e">Intel Inc. / Intel Iris</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">11.</td><td>document.hidden</td><td style="color:#6b5a3e">always false</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">12.</td><td>visibilityState</td><td style="color:#6b5a3e">always 'visible'</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">13.</td><td>Notification API</td><td style="color:#6b5a3e">requestPermission suppressed</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">14.</td><td>chrome.runtime fallback</td><td style="color:#6b5a3e">dual-check creation</td></tr>
+      <tr><td style="padding:.3rem .5rem;color:#c4a56e">15.</td><td>Real browser profile</td><td style="color:#6b5a3e">hardlinks, authentic cookies</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- CLOUDFRONT -->
+<div class="warning-box">
+  <h4>CloudFront Sentinel Alert</h4>
+  <p style="color:#c09090;font-size:.82rem">Some territories are guarded by the CloudFront Sentinel. It rejects headless creatures and Chromium impostors. The only known passage requires:</p>
+  <p style="color:#d4a070;font-size:.78rem;margin-top:.5rem">
+    ✓ Yandex Browser as mount<br>
+    ✓ Headed mode (visible window)<br>
+    ✓ Stealth shroud active<br>
+    ✓ Real browser profile with cookies
+  </p>
+  <p style="color:#8b5a5a;font-size:.7rem;margin-top:.5rem">All Chrome/Edge/Cromium mounts have been retired. Five Yandex profiles remain.</p>
+</div>
+
+<div class="divider">※ &nbsp; P A R T &nbsp; F O U R &nbsp; : &nbsp; A D V A N C E D &nbsp; T E C H N I Q U E S &nbsp; ※</div>
+
+<!-- SPECIAL OPS -->
+<div class="section">
+  <span class="section-tag">SPECIAL OPERATIONS</span>
+  <h2>Beyond Basic Taming</h2>
+
+  <div class="field-note">
+    <div class="note-label">STEALTH EXTRACTION — Silent Harvest</div>
+    <p style="color:#a09070;font-size:.8rem">For one-off missions where you need content without establishing a permanent bond. Launches a fresh creature, extracts, releases. No session baggage.</p>
+    <span class="cmd">freeact stealth-extract <span class="cmd-arg">https://site.com</span> --content-type markdown -o page.md</span>
+    <span class="cmd-comment">← quick, stateless, stealth-patched</span>
+  </div>
+
+  <div class="field-note">
+    <div class="note-label">CAPTCHA SOLVER — Breaking the Hex</div>
+    <p style="color:#a09070;font-size:.8rem">When a site casts a CAPTCHA spell, the solver attempts counter-magic in this order:</p>
+    <p style="color:#8b7355;font-size:.75rem;margin-top:.5rem">
+      1. Audio challenge — downloads MP3, transcribes via Google Speech or local Whisper<br>
+      2. Image OCR — Tesseract / EasyOCR text extraction<br>
+      3. reCAPTCHA v2 — human-like bezier mouse path + checkbox click<br>
+      4. hCaptcha — iframe checkbox detection<br>
+      5. Cloudflare Turnstile — behavioral simulation, 15s patience
+    </p>
+    <span class="cmd">solve-captcha</span>
+    <span class="cmd-comment">← all strategies, no API keys needed</span>
+  </div>
+
+  <div class="field-note">
+    <div class="note-label">LIVE CONNECTION — Riding an Awake Creature</div>
+    <p style="color:#a09070;font-size:.8rem">Connect to your <em>actual</em> daily browser — the one with your real logins, cookies, and sessions. No copy, no new profile. You become a passenger in your own creature.</p>
+    <span class="cmd">freeact setup --browser yandex</span> <span class="cmd-comment">← one-time: creates desktop shortcut with CDP</span><br>
+    <span class="cmd">freeact connect</span> <span class="cmd-comment">← attach anytime, any tab</span><br>
+    <span class="cmd">freeact tabs</span> <span class="cmd-comment">← list open tabs</span><br>
+    <span class="cmd">freeact tab switch <span class="cmd-arg">2</span></span> <span class="cmd-comment">← jump between tabs</span>
+  </div>
+</div>
+
+<!-- ARCHITECTURE -->
+<div class="section">
+  <span class="section-tag">ANATOMY</span>
+  <h2>Internal Organs of the Taming Engine</h2>
+
+  <div class="diagram">
+    <div class="d-title">THE CREATURE'S NERVOUS SYSTEM</div>
+    <pre style="color:#8b7355;font-size:.68rem;line-height:1.6">
+┌──────────────────────────────────────────────────┐
+│  CLI (cli.py)  ←── human / AI agent commands     │
+│  daemon (daemon.py :9341) ←── persistent spirit  │
+│       │                                          │
+│  ┌────┴─────────────────────────────────────┐    │
+│  │  _handlers.py  ←── shared brain (16 ops) │    │
+│  └────┬─────────────────────────────────────┘    │
+│       │                                          │
+│  ┌────┴────┬──────────┬──────────┬──────────┐   │
+│  │ state   │interact  │extract   │ network  │   │
+│  │ DOM tree│click/type│markdown  │ fetch/XHR│   │
+│  │ wait    │hover/keys│html/eval │ capture  │   │
+│  └─────────┴──────────┴──────────┴──────────┘   │
+│       │                                          │
+│  ┌────┴─────────────────────────────────────┐    │
+│  │  browser.py  ←── CDP connection manager  │    │
+│  │  stealth.py  ←── 15 anti-detection spells│    │
+│  │  config.py   ←── 5s cached configuration │    │
+│  │  session.py  ←── 8h session persistence  │    │
+│  └──────────────────────────────────────────┘    │
+│       │                                          │
+│  ┌────┴────┐                                     │
+│  │ Yandex  │  ←── the tamed creature             │
+│  │ Browser │      real profile, real cookies      │
+│  └─────────┘                                     │
+└──────────────────────────────────────────────────┘
+    </pre>
+  </div>
+
+  <div class="field-note">
+    <div class="note-label">CONFIGURATION — The Tamer's Grimoire</div>
+    <p style="color:#a09070;font-size:.8rem">Stored at <span class="cmd">~/.freeact/config.json</span>. Cached in memory for 5 seconds between reads.</p>
+    <table style="width:100%;font-size:.72rem;color:#8b7355;margin-top:.8rem">
+      <tr><td style="color:#c4a56e">default_browser</td><td>yandex</td><td style="color:#6b5a3e">The Alpha mount</td></tr>
+      <tr><td style="color:#c4a56e">headless</td><td>false</td><td style="color:#6b5a3e">Always visible (CloudFront passage)</td></tr>
+      <tr><td style="color:#c4a56e">stealth</td><td>true</td><td style="color:#6b5a3e">Invisibility shroud active</td></tr>
+      <tr><td style="color:#c4a56e">timeout</td><td>30000</td><td style="color:#6b5a3e">30 seconds patience</td></tr>
+      <tr><td style="color:#c4a56e">max_network_entries</td><td>500</td><td style="color:#6b5a3e">Thought capture capacity</td></tr>
+    </table>
+  </div>
+</div>
+
+<div class="divider">※ &nbsp; P A R T &nbsp; F I V E &nbsp; : &nbsp; T H E &nbsp; L A W S &nbsp; ※</div>
+
+<!-- LAWS -->
+<div class="section">
+  <span class="section-tag">TAMER'S CODE</span>
+  <h2>The Ten Unbreakable Laws</h2>
+
+  <div class="sticky" style="width:80%">
+    <h4>I. The Law of the Yandex</h4>
+    <p>Thou shalt use no browser but Yandex. Chrome and Edge are false prophets that fall before CloudFront. The Alpha mount alone passes the sentinel.</p>
+  </div>
+
+  <div class="sticky" style="width:72%">
+    <h4>II. The Law of Visibility</h4>
+    <p>Thou shalt keep the creature visible (headed=true). Invisible creatures (headless) are detected and slain by guardian spirits.</p>
+  </div>
+
+  <div class="sticky" style="width:78%">
+    <h4>III. The Law of Observation</h4>
+    <p>Thou shalt observe (state) before touching (click/input). The creature's form mutates after every interaction. Indices are ephemeral.</p>
+  </div>
+
+  <div class="sticky" style="width:68%">
+    <h4>IV. The Law of the Cycle</h4>
+    <p>State → interact → wait stable → state. This cycle is sacred. Break it and the creature will reject thy commands.</p>
+  </div>
+
+  <div class="sticky" style="width:75%">
+    <h4>V. The Law of the Session</h4>
+    <p>Every command requires <span class="cmd">--session</span>. The session binds thee to the creature. Sessions perish after 8 hours of neglect.</p>
+  </div>
+
+  <div class="sticky" style="width:70%">
+    <h4>VI. The Law of the Handler</h4>
+    <p>All command logic flows through <span class="cmd">_handlers.py</span>. Daemon and CLI are but two faces of the same spirit. Duplicate not thy logic.</p>
+  </div>
+
+  <div class="sticky" style="width:82%">
+    <h4>VII. The Law of the Hardlink</h4>
+    <p>Copy not the creature's nest fully. Share its inodes through hardlinks. Only the mutable flesh need be duplicated.</p>
+  </div>
+
+  <div class="sticky" style="width:65%">
+    <h4>VIII. The Law of Zero Errors</h4>
+    <p>Ruff must pass with zero complaints. Tests must show fourteen green marks. The code is sacred; keep it pure.</p>
+  </div>
+
+  <div class="sticky" style="width:73%">
+    <h4>IX. The Law of Local Turndown</h4>
+    <p>Load not thy markdown converter from distant CDNs. Bundle it within thy package. The creature needs no internet to process HTML.</p>
+  </div>
+
+  <div class="sticky" style="width:77%">
+    <h4>X. The Law of the Log</h4>
+    <p>All significant events must be recorded in <span class="cmd">~/.freeact/freeact.log</span>. The creature's life story is written there for post-mortem analysis.</p>
+  </div>
+</div>
+
+<div class="divider">※ &nbsp; A P P E N D I X &nbsp; : &nbsp; F I E L D &nbsp; L O G &nbsp; ※</div>
+
+<!-- LOG -->
+<div class="section">
+  <span class="section-tag">RECENT EXPEDITION</span>
+  <h2>Last Known Encounter</h2>
+  <div class="field-log">
+[2026-07-20 15:42:01] [INFO] Daemon started on 127.0.0.1:9341
+[2026-07-20 15:42:03] [INFO] Launching Yandex (headed=True) profile browser_787d028ef46d_profile
+[2026-07-20 15:42:12] [INFO] CDP connected to Yandex on port 51023 (attempt 9)
+[2026-07-20 15:42:15] [INFO] Navigated to https://chat.deepseek.com/
+[2026-07-20 15:42:17] [INFO] DOM stable — 29 elements detected
+[2026-07-20 15:42:17] [INFO] User: Алексей Кулаков — session active
+[2026-07-20 15:42:20] [INFO] Click element [29] — Accept cookies
+[2026-07-20 15:42:22] [INFO] Input element [22] — "привет"
+[2026-07-20 15:42:25] [INFO] Keys: Enter — message sent
+[2026-07-20 15:42:28] [INFO] Response received: "Привет! Чем могу помочь?..."
+[2026-07-20 15:42:30] [INFO] Session 'ds' closed
+  </div>
+</div>
+
+<footer>
+  <p>freeact v0.3.1 — The Browser Tamer's Field Guide</p>
+  <p>19 creatures in the menagerie &bull; 14 tests passing &bull; 0 ruff errors</p>
+  <p class="sig">~ compiled by the Deep Woods Tamer's Guild, 2026</p>
+  <p style="font-size:.6rem;color:#4a3a2a;margin-top:1rem">Printed on responsibly sourced digital parchment. No browsers were harmed in the making of this document.</p>
+</footer>
+
+</div>
+</body>
+</html>

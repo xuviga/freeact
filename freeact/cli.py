@@ -1,35 +1,43 @@
-"""Free Browser Agent CLI — main entry point."""
+"""Free Browser Agent CLI — main entry point.
+
+All commands route through the daemon (127.0.0.1:9341) when it's running.
+Direct mode is fallback only — used when daemon is not running.
+"""
 
 import asyncio
-import sys
 import io
 import json
+import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
+import typer  # noqa: E402
+from rich.console import Console  # noqa: E402
+
+from freeact import __version__  # noqa: E402
+from freeact._handlers import (  # noqa: E402
+    h_back, h_click, h_eval, h_forward, h_get, h_hover,
+    h_input, h_keys, h_navigate, h_network, h_reload,
+    h_screenshot, h_scroll, h_scrollintoview, h_select,
+    h_state, h_upload, h_wait,
+)
+from freeact.browser import get_browser_manager  # noqa: E402
+from freeact.config import BrowserConfig, FreeactConfig, get_config  # noqa: E402
+from freeact.extraction import (  # noqa: E402
+    get_markdown,
+)
+from freeact.network import (  # noqa: E402
+    start_network_monitoring,
+)
+from freeact.session import get_session_manager  # noqa: E402
+from freeact.skills import get_skills_advanced, get_skills_core  # noqa: E402
+from freeact.state import (  # noqa: E402
+    init_state_engine, wait_for_dom_stable,
+)
+
+warnings.simplefilter("ignore", ResourceWarning)
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-
-import typer
-from rich.console import Console
-
-from freeact import __version__
-from freeact.browser import get_browser_manager
-from freeact.config import BrowserConfig, get_config
-from freeact.extraction import (
-    evaluate_js, get_element_text, get_element_value,
-    get_html, get_markdown, get_title, take_screenshot,
-)
-from freeact.interaction import (
-    click_element, hover_element, input_text, scroll_by_selector,
-    scroll_page, select_option, send_keys, upload_file,
-)
-from freeact.network import (
-    clear_network_requests, get_network_request_detail,
-    get_network_requests, start_network_monitoring,
-)
-from freeact.session import get_session_manager
-from freeact.skills import get_skills_advanced, get_skills_core
-from freeact.state import get_page_state
 
 app = typer.Typer(
     name="freeact",
@@ -40,6 +48,9 @@ app = typer.Typer(
 )
 
 console = Console(force_terminal=True, legacy_windows=False)
+
+
+# ─── Helpers ─────────────────────────────────────────────
 
 
 def _ctx_session(ctx: typer.Context, opt: Optional[str] = None) -> Optional[str]:
@@ -55,7 +66,6 @@ def _req_session(ctx: typer.Context, opt: Optional[str] = None) -> str:
 
 
 def _daemon_call(path: str, body: dict) -> dict | None:
-    """Try daemon first, return None if daemon not running."""
     try:
         from freeact.daemon import is_daemon_running, send_daemon_command
         if is_daemon_running():
@@ -65,41 +75,253 @@ def _daemon_call(path: str, body: dict) -> dict | None:
     return None
 
 
-def _run_or_daemon(session: str, path: str, body: dict, fallback_fn):
-    """Route to daemon if available, otherwise run locally."""
-    result = _daemon_call(path, {**body, "session": session})
+def _try_daemon(path: str, body: dict, fallback_fn) -> bool:
+    """Try daemon first. If daemon responds, print result and return True.
+    Otherwise run the fallback async function and return False."""
+    result = _daemon_call(path, body)
     if result is not None:
-        return result
-    return asyncio.run(fallback_fn(session))
+        if result.get("ok"):
+            console.print(result.get("result", ""))
+        else:
+            console.print(f"[red]{result.get('error', str(result))}[/red]")
+        return True
+    console.print(asyncio.run(fallback_fn()))
+    return False
 
 
-@app.callback(invoke_without_command=True)
-def main(
-    ctx: typer.Context,
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-    version: bool = typer.Option(False, "--version", "-v", help="Show version"),
+# ─── Daemon ──────────────────────────────────────────────
+
+
+@app.command()
+def daemon(
+    action: str = typer.Argument("start", help="start, stop, or status"),
 ):
-    ctx.ensure_object(dict)
-    ctx.obj["session"] = session
-    if version:
-        console.print(f"freeact v{__version__}")
-        raise typer.Exit()
-    if ctx.invoked_subcommand is None:
-        _auto_setup_shortcut()
-        console.print("[bold cyan]Free Browser Agent CLI[/bold cyan]")
-        console.print(f"Version: {__version__}")
-        console.print("Run [green]freeact --help[/green] for available commands")
+    if action == "start":
+        from freeact.daemon import start_daemon_background
+        result = start_daemon_background()
+        if result.get("ok"):
+            console.print(f"[green]{result.get('message')}[/green]")
+        else:
+            console.print(f"[red]{result.get('error')}[/red]")
+    elif action == "stop":
+        from freeact.daemon import stop_daemon
+        result = stop_daemon()
+        if result.get("ok"):
+            console.print(f"[green]{result.get('message')}[/green]")
+        else:
+            console.print(f"[red]{result.get('error', 'Failed to stop daemon')}[/red]")
+    elif action == "status":
+        from freeact.daemon import is_daemon_running, send_daemon_command
+        if is_daemon_running():
+            result = send_daemon_command("/cmd/daemon", {"action": "status"})
+            port = result.get('port', 9341)
+            uptime = result.get('uptime', 0)
+            version = result.get('version', '?')
+            console.print(f"[green]Daemon running[/green] v{version} on port {port} (uptime: {uptime:.0f}s)")
+        else:
+            console.print("[yellow]Daemon not running[/yellow]")
+    else:
+        console.print("Usage: freeact daemon [start|stop|status]")
 
 
-def _auto_setup_shortcut():
-    """Create CDP browser shortcut on first run if it doesn't exist."""
-    shortcut = Path.home() / "Desktop" / "Yandex (FreeAct).lnk"
-    if not shortcut.exists():
-        from freeact.live import setup_browser_cdp
-        try:
-            setup_browser_cdp("yandex")
-        except Exception:
-            pass
+# ─── Browser ─────────────────────────────────────────────
+
+
+@app.command()
+def browser(
+    ctx: typer.Context,
+    action: str = typer.Argument(..., help="open, list, create, update, delete, types, connect"),
+    arg1: Optional[str] = typer.Argument(None, help="Browser ID or URL"),
+    arg2: Optional[str] = typer.Argument(None, help="URL"),
+    type: Optional[str] = typer.Option("chromium", "--type", help="Browser type (chrome/yandex/edge/chromium)"),
+    name: Optional[str] = typer.Option(None, "--name", help="Browser name"),
+    desc: Optional[str] = typer.Option(None, "--desc", help="Browser description"),
+    desc_append: Optional[str] = typer.Option(None, "--desc-append", help="Append to description"),
+    proxy: Optional[str] = typer.Option(None, "--proxy", help="Proxy URL (socks5://host:port)"),
+    no_proxy: bool = typer.Option(False, "--no-proxy", help="Remove proxy"),
+    headed: bool = typer.Option(False, "--headed", help="Show browser window"),
+    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
+    refresh_profile: bool = typer.Option(False, "--refresh-profile", help="Re-copy browser profile from source"),
+):
+    session_name = _ctx_session(ctx, session)
+    config = get_config()
+
+    # ── browser open ──
+    if action == "open":
+        if not arg1:
+            console.print("[red]Error: browser ID required[/red]")
+            return
+        if not session_name:
+            console.print("[red]Error: --session required[/red]")
+            return
+
+        bc = config.browsers.get(arg1)
+        if not bc:
+            bc = BrowserConfig(id=arg1, name=arg1, type=type or config.default_browser)
+        elif bc.confirm_before_use:
+            console.print(f"[yellow]Browser '{bc.name}' requires confirmation before use.[/yellow]")
+            console.print(f"Type: {bc.type} | Proxy: {bc.proxy or 'none'}")
+            response = typer.confirm("Continue?", default=True)
+            if not response:
+                return
+
+        url = arg2 or "about:blank"
+        dm_body = {
+            "action": "open", "browser_id": arg1, "url": url,
+            "session": session_name, "type": type or config.default_browser,
+        }
+        dm = _daemon_call("/cmd/browser", dm_body)
+        if dm is not None:
+            console.print(dm.get("result", dm.get("error", str(dm))))
+            return
+
+        async def _run():
+            manager = await get_browser_manager()
+            if "://" not in url and url != "about:blank":
+                url_fixed = "https://" + url
+            else:
+                url_fixed = url
+            bc = config.browsers.get(arg1)
+            if not bc:
+                bc = BrowserConfig(id=arg1, name=arg1, type=type or config.default_browser)
+            page_config = FreeactConfig(
+                browsers=config.browsers,
+                default_browser=config.default_browser,
+                headless=config.headless if not headed else False,
+                timeout=config.timeout,
+                proxy=config.proxy,
+                stealth=config.stealth,
+                api_key=config.api_key,
+            )
+            page = await manager.get_page(arg1, bc, page_config)
+            if refresh_profile:
+                await manager.refresh_profile(bc, page_config)
+            await _ensure_page_state(page)
+            if url_fixed and url_fixed != "about:blank":
+                await page.goto(url_fixed, wait_until="domcontentloaded", timeout=30000)
+                await wait_for_dom_stable(page, timeout_ms=5000)
+            await manager.save_page_url(arg1, session_name, page.url)
+            sm = get_session_manager()
+            sm.create(session_name, arg1)
+            return f"Browser '{arg1}' opened, session '{session_name}' started"
+        console.print(asyncio.run(_run()))
+        return
+
+    # ── browser create ──
+    if action == "create":
+        if not name:
+            console.print("[red]Error: --name required[/red]")
+            return
+        dm_body = {"action": "create", "name": name, "type": type or config.default_browser,
+                    "desc": desc or "", "proxy": proxy or None}
+        dm = _daemon_call("/cmd/browser", dm_body)
+        if dm is not None:
+            console.print(dm.get("result", dm.get("error", str(dm))))
+            return
+
+        async def _run():
+            manager = await get_browser_manager()
+            bid = manager.generate_browser_id()
+            bc = BrowserConfig(id=bid, name=name, type=type or config.default_browser,
+                               desc=desc or "", proxy=proxy or None)
+            config.browsers[bid] = bc
+            config.save()
+            return f"Browser created: id={bid}, name={name}, type={bc.type}"
+        console.print(asyncio.run(_run()))
+        return
+
+    # ── browser list / update / delete / types ──
+    dm = _daemon_call("/cmd/browser", {"action": action, "browser_id": arg1,
+                     "name": name, "desc": desc, "desc_append": desc_append,
+                     "proxy": proxy, "no_proxy": no_proxy})
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
+
+    async def _run():
+        manager = await get_browser_manager()
+        match action:
+            case "list":
+                if not config.browsers:
+                    return "No browsers configured"
+                lines = ["Browsers:"]
+                for bid, bc in config.browsers.items():
+                    px = f" proxy={bc.proxy}" if bc.proxy else ""
+                    lines.append(f"  {bid}: name={bc.name}, type={bc.type}, desc={bc.desc}{px}")
+                return "\n".join(lines)
+            case "update":
+                if not arg1:
+                    return "Error: browser ID required"
+                bc = config.browsers.get(arg1)
+                if not bc:
+                    return f"Error: browser '{arg1}' not found"
+                if name:
+                    bc.name = name
+                if desc:
+                    bc.desc = desc
+                if desc_append:
+                    bc.desc = (bc.desc + " " + desc_append) if bc.desc else desc_append
+                if no_proxy:
+                    bc.proxy = None
+                elif proxy:
+                    bc.proxy = proxy
+                config.save()
+                return f"Browser '{arg1}' updated"
+            case "delete":
+                if not arg1:
+                    return "Error: browser ID required"
+                config.browsers.pop(arg1, None)
+                config.save()
+                await manager.close_context(arg1)
+                return f"Browser '{arg1}' deleted"
+            case "types":
+                from freeact.browser import BROWSER_MAP
+                lines = ["Available real browsers:"]
+                for key, info in BROWSER_MAP.items():
+                    found = "NOT FOUND"
+                    for p in info["paths"]:
+                        if Path(p).exists():
+                            found = str(p)
+                            break
+                    lines.append(f"  {info['name']}: {found}")
+                    lines.append(f"    profile: {info['profile']}")
+                return "\n".join(lines)
+            case "connect":
+                if not arg1:
+                    return "Error: CDP URL or port required"
+                cdp_url = arg1
+                if cdp_url.isdigit():
+                    cdp_url = f"http://127.0.0.1:{cdp_url}"
+                if not session_name:
+                    return "Error: --session required for browser connect"
+                await manager.start()
+                browser = await manager._playwright.chromium.connect_over_cdp(cdp_url)
+                context = browser.contexts[0] if browser.contexts else await browser.new_context()
+                page = context.pages[0] if context.pages else await context.new_page()
+                await _ensure_page_state(page)
+                if arg2:
+                    nav_url = arg2
+                    if "://" not in nav_url:
+                        nav_url = "https://" + nav_url
+                    await page.goto(nav_url, wait_until="domcontentloaded", timeout=30000)
+                    await wait_for_dom_stable(page, timeout_ms=5000)
+                    await manager.save_page_url("cdp", session_name, page.url)
+                sm = get_session_manager()
+                sm.create(session_name, "cdp")
+                manager._browsers["cdp"] = browser
+                manager._contexts["cdp"] = context
+                return f"Connected to {cdp_url}, session '{session_name}' started"
+            case _:
+                return f"Unknown browser action: {action}"
+    console.print(asyncio.run(_run()))
+
+
+# ─── Direct-mode helpers ─────────────────────────────────
+
+
+async def _ensure_page_state(page) -> None:
+    await start_network_monitoring(page)
+    await init_state_engine(page)
 
 
 async def _get_page(session_name: str):
@@ -114,19 +336,28 @@ async def _get_page(session_name: str):
         port = cfg.get("port", 9222)
         result = await connect_to_live_browser(port)
         if result.get("ok"):
-            pw = result["browser"]
             br = result["cdp_browser"]
-            ctxs = br.contexts
-            for ctx in ctxs:
+            manager = await get_browser_manager()
+            saved_url = None
+            try:
+                saved_url = await manager.get_saved_url(session_name)
+            except Exception:
+                pass
+            for ctx in br.contexts:
+                for page in ctx.pages:
+                    try:
+                        await page.title()
+                        if saved_url and saved_url in page.url:
+                            return page
+                    except Exception:
+                        continue
+            for ctx in br.contexts:
                 for page in ctx.pages:
                     try:
                         await page.title()
                         return page
                     except Exception:
                         continue
-            for ctx in ctxs:
-                if ctx.pages:
-                    return ctx.pages[0]
         return None
 
     manager = await get_browser_manager()
@@ -142,31 +373,21 @@ async def _get_page(session_name: str):
                 cur = page.url
                 if cur in ("about:blank", "") or cur.startswith("chrome://"):
                     await page.goto(saved_url, wait_until="domcontentloaded")
+                    await wait_for_dom_stable(page, timeout_ms=5000)
             except Exception:
                 pass
     return page
 
 
-def _session_cmd(fn):
-    """Decorator: resolves session, gets page, runs async fn, prints result."""
-    import functools
-
-    @functools.wraps(fn)
-    def wrapper(ctx: typer.Context, *args, session: Optional[str] = None, **kwargs):
-        s = _req_session(ctx, session)
-
-        async def _run():
-            page = await _get_page(s)
-            if not page:
-                return f"Error: session '{s}' not found"
-            return await fn(page, *args, **kwargs)
-
-        console.print(asyncio.run(_run()))
-
-    return wrapper
+async def _get_page_with_state(session_name: str):
+    page = await _get_page(session_name)
+    if page:
+        await _ensure_page_state(page)
+    return page
 
 
-# ─── Navigation ───────────────────────────────────────────
+# ─── Navigation ──────────────────────────────────────────
+
 
 @app.command()
 def navigate(
@@ -175,101 +396,75 @@ def navigate(
     session: Optional[str] = typer.Option(None, "--session", help="Session name"),
 ):
     s = _req_session(ctx, session)
-    dm = _daemon_call("/cmd/navigate", {"session": s, "url": url})
-    if dm is not None and dm.get("ok"):
-        console.print(dm.get("result", dm.get("error", str(dm))))
-        return
+    _try_daemon("/cmd/navigate", {"session": s, "url": url}, lambda: _navigate_direct(s, url))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        await start_network_monitoring(page)
-        if "://" not in url:
-            url = "https://" + url
-        await page.goto(url, wait_until="domcontentloaded")
-        manager = await get_browser_manager()
-        sm = get_session_manager()
-        sess = sm.get(s)
-        if sess:
-            await manager.save_page_url(sess.browser_id, s, page.url)
-        return f"Navigated to {url}"
-    console.print(asyncio.run(_run()))
+
+async def _navigate_direct(s: str, url: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    result = await h_navigate(page, url)
+    manager = await get_browser_manager()
+    sm = get_session_manager()
+    sess = sm.get(s)
+    if sess:
+        await manager.save_page_url(sess.browser_id, s, page.url)
+    return result
 
 
 @app.command()
-def back(
-    ctx: typer.Context,
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def back(ctx: typer.Context, session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/back", {"session": s}, lambda: _back_direct(s))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        await page.go_back()
-        return "Navigated back"
 
-    console.print(asyncio.run(_run()))
+async def _back_direct(s: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_back(page)
 
 
 @app.command()
-def forward(
-    ctx: typer.Context,
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def forward(ctx: typer.Context, session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/forward", {"session": s}, lambda: _forward_direct(s))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        await page.go_forward()
-        return "Navigated forward"
 
-    console.print(asyncio.run(_run()))
+async def _forward_direct(s: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_forward(page)
 
 
 @app.command()
-def reload(
-    ctx: typer.Context,
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def reload(ctx: typer.Context, session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/reload", {"session": s}, lambda: _reload_direct(s))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        await page.reload()
-        return "Page reloaded"
 
-    console.print(asyncio.run(_run()))
+async def _reload_direct(s: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_reload(page)
 
 
 # ─── Page State ──────────────────────────────────────────
 
+
 @app.command()
-def state(
-    ctx: typer.Context,
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def state(ctx: typer.Context, session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/state", {"session": s}, lambda: _state_direct(s))
 
-    dm = _daemon_call("/cmd/state", {"session": s})
-    if dm is not None and dm.get("ok"):
-        console.print(dm.get("result", ""))
-        return
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        await start_network_monitoring(page)
-        return await get_page_state(page)
-
-    console.print(asyncio.run(_run()))
+async def _state_direct(s: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_state(page)
 
 
 @app.command()
@@ -280,167 +475,143 @@ def screenshot(
     session: Optional[str] = typer.Option(None, "--session", help="Session name"),
 ):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/screenshot", {"session": s, "path": path, "full": full},
+                lambda: _screenshot_direct(s, path, full))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await take_screenshot(page, path, full)
 
-    console.print(asyncio.run(_run()))
+async def _screenshot_direct(s: str, path: str | None, full: bool):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_screenshot(page, path, full)
 
 
 # ─── Interaction ─────────────────────────────────────────
 
+
 @app.command()
-def click(
-    ctx: typer.Context,
-    index: int = typer.Argument(..., help="Element index from state"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def click(ctx: typer.Context, index: int = typer.Argument(..., help="Element index from state"),
+          session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/click", {"session": s, "index": index}, lambda: _click_direct(s, index))
 
-    dm = _daemon_call("/cmd/click", {"session": s, "index": index})
-    if dm is not None and dm.get("ok"):
-        console.print(dm.get("result", dm.get("error", str(dm))))
-        return
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await click_element(page, index)
-    console.print(asyncio.run(_run()))
+async def _click_direct(s: str, index: int):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_click(page, index)
 
 
 @app.command()
-def input(
-    ctx: typer.Context,
-    index: int = typer.Argument(..., help="Element index from state"),
-    text: str = typer.Argument(..., help="Text to type"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def input(ctx: typer.Context, index: int = typer.Argument(..., help="Element index from state"),
+          text: str = typer.Argument(..., help="Text to type"),
+          session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/input", {"session": s, "index": index, "text": text},
+                lambda: _input_direct(s, index, text))
 
-    dm = _daemon_call("/cmd/input", {"session": s, "index": index, "text": text})
-    if dm is not None and dm.get("ok"):
-        console.print(dm.get("result", dm.get("error", str(dm))))
-        return
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await input_text(page, index, text)
-    console.print(asyncio.run(_run()))
+async def _input_direct(s: str, index: int, text: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_input(page, index, text)
 
 
 @app.command()
-def hover(
-    ctx: typer.Context,
-    index: int = typer.Argument(..., help="Element index from state"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def hover(ctx: typer.Context, index: int = typer.Argument(..., help="Element index from state"),
+          session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/hover", {"session": s, "index": index}, lambda: _hover_direct(s, index))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await hover_element(page, index)
 
-    console.print(asyncio.run(_run()))
+async def _hover_direct(s: str, index: int):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_hover(page, index)
 
 
 @app.command()
-def select(
-    ctx: typer.Context,
-    index: int = typer.Argument(..., help="Element index from state"),
-    option: str = typer.Argument(..., help="Option text to select"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def select(ctx: typer.Context, index: int = typer.Argument(..., help="Element index from state"),
+           option: str = typer.Argument(..., help="Option text to select"),
+           session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/select", {"session": s, "index": index, "option": option},
+                lambda: _select_direct(s, index, option))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await select_option(page, index, option)
 
-    console.print(asyncio.run(_run()))
+async def _select_direct(s: str, index: int, option: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_select(page, index, option)
 
 
 @app.command()
-def keys(
-    ctx: typer.Context,
-    key: str = typer.Argument(..., help="Key to send (Enter, Tab, Escape, etc.)"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def keys(ctx: typer.Context, key: str = typer.Argument(..., help="Key to send (Enter, Tab, Escape, etc.)"),
+         session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/keys", {"session": s, "key": key}, lambda: _keys_direct(s, key))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await send_keys(page, key)
 
-    console.print(asyncio.run(_run()))
+async def _keys_direct(s: str, key: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_keys(page, key)
 
 
 @app.command()
-def scroll(
-    ctx: typer.Context,
-    direction: str = typer.Argument(..., help="Direction: up or down"),
-    amount: int = typer.Option(500, "--amount", help="Scroll amount in pixels"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def scroll(ctx: typer.Context, direction: str = typer.Argument(..., help="Direction: up or down"),
+           amount: int = typer.Option(500, "--amount", help="Scroll amount in pixels"),
+           session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/scroll", {"session": s, "direction": direction, "amount": amount},
+                lambda: _scroll_direct(s, direction, amount))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await scroll_page(page, direction, amount)
 
-    console.print(asyncio.run(_run()))
+async def _scroll_direct(s: str, direction: str, amount: int):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_scroll(page, direction, amount)
 
 
 @app.command()
-def scrollintoview(
-    ctx: typer.Context,
-    selector: str = typer.Option(..., "--selector", help="CSS selector"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def scrollintoview(ctx: typer.Context, selector: str = typer.Option(..., "--selector", help="CSS selector"),
+                   session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/scrollintoview", {"session": s, "selector": selector},
+                lambda: _scrollintoview_direct(s, selector))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await scroll_by_selector(page, selector)
 
-    console.print(asyncio.run(_run()))
+async def _scrollintoview_direct(s: str, selector: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_scrollintoview(page, selector)
 
 
 @app.command()
-def upload(
-    ctx: typer.Context,
-    index: int = typer.Argument(..., help="File input element index"),
-    file_path: str = typer.Argument(..., help="Path to file to upload"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def upload(ctx: typer.Context, index: int = typer.Argument(..., help="File input element index"),
+           file_path: str = typer.Argument(..., help="Path to file to upload"),
+           session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
+    _try_daemon("/cmd/upload", {"session": s, "index": index, "file_path": file_path},
+                lambda: _upload_direct(s, index, file_path))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await upload_file(page, index, file_path)
 
-    console.print(asyncio.run(_run()))
+async def _upload_direct(s: str, index: int, file_path: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_upload(page, index, file_path)
 
 
 # ─── Data Extraction ─────────────────────────────────────
+
 
 @app.command()
 def get(
@@ -451,73 +622,55 @@ def get(
     session: Optional[str] = typer.Option(None, "--session", help="Session name"),
 ):
     s = _req_session(ctx, session)
-    dm = _daemon_call("/cmd/get", {"session": s, "what": what, "arg": arg, "selector": selector})
-    if dm is not None and dm.get("ok"):
-        console.print(dm.get("result", dm.get("error", str(dm))))
-        return
+    _try_daemon("/cmd/get", {"session": s, "what": what, "arg": arg, "selector": selector},
+                lambda: _get_direct(s, what, arg, selector))
 
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        match what:
-            case "title": return await get_title(page)
-            case "html": return await get_html(page, selector)
-            case "markdown": return await get_markdown(page)
-            case "text":
-                if not arg: return "Error: index required for 'get text'"
-                return await get_element_text(page, int(arg))
-            case "value":
-                if not arg: return "Error: index required for 'get value'"
-                return await get_element_value(page, int(arg))
-            case _: return f"Error: unknown get type '{what}'"
-    console.print(asyncio.run(_run()))
+
+async def _get_direct(s: str, what: str, arg: str | None, selector: str | None):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_get(page, what, arg, selector)
 
 
 @app.command()
-def eval(
-    ctx: typer.Context,
-    js: str = typer.Argument(..., help="JavaScript to execute"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
+def eval(ctx: typer.Context, js: str = typer.Argument(..., help="JavaScript to execute"),
+         session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
-
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        return await evaluate_js(page, js)
-
-    console.print(asyncio.run(_run()))
+    _try_daemon("/cmd/eval", {"session": s, "js": js}, lambda: _eval_direct(s, js))
 
 
-# ─── Wait ────────────────────────────────────────────────
+async def _eval_direct(s: str, js: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_eval(page, js)
+
+
+# ─── Wait ─────────────────────────────────────────────────
+
 
 @app.command()
 def wait(
     ctx: typer.Context,
-    what: str = typer.Argument("stable", help="What to wait for: stable"),
+    what: str = typer.Argument("stable", help="What to wait for: stable, navigation"),
     timeout: int = typer.Option(30000, "--timeout", help="Timeout in ms"),
     session: Optional[str] = typer.Option(None, "--session", help="Session name"),
 ):
     s = _req_session(ctx, session)
-
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        if what == "stable":
-            try:
-                await page.wait_for_load_state("networkidle", timeout=timeout)
-                return "Page stable"
-            except Exception as e:
-                return f"Wait timeout: {e}"
-        return f"Unknown wait type: {what}"
-
-    console.print(asyncio.run(_run()))
+    _try_daemon("/cmd/wait", {"session": s, "what": what, "timeout": timeout},
+                lambda: _wait_direct(s, what, timeout))
 
 
-# ─── Network ─────────────────────────────────────────────
+async def _wait_direct(s: str, what: str, timeout: int):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_wait(page, what, timeout)
+
+
+# ─── Network ──────────────────────────────────────────────
+
 
 @app.command()
 def network(
@@ -532,37 +685,30 @@ def network(
     session: Optional[str] = typer.Option(None, "--session", help="Session name"),
 ):
     s = _req_session(ctx, session)
-
-    async def _run():
-        page = await _get_page(s)
-        if not page:
-            return f"Error: session '{s}' not found"
-        match action:
-            case "requests":
-                return await get_network_requests(
-                    page, url_filter=filter, types=type,
-                    method=method, status=status, clear=clear,
-                )
-            case "request":
-                if not arg:
-                    return "Error: request index required"
-                return await get_network_request_detail(page, int(arg))
-            case "clear":
-                await clear_network_requests(page)
-                return "Network log cleared"
-            case _:
-                return f"Unknown network action: {action}"
-
-    console.print(asyncio.run(_run()))
+    dm_body = {"session": s, "action": action, "arg": arg, "filter": filter,
+               "type": type, "method": method, "status": status, "clear": clear}
+    _try_daemon("/cmd/network", dm_body, lambda: _network_direct(s, action, arg, filter, type, method, status, clear))
 
 
-# ─── Session ─────────────────────────────────────────────
+async def _network_direct(s: str, action: str, arg: str | None, url_filter: str | None,
+                          types: str | None, method: str | None, status: str | None, clear: bool):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    return await h_network(page, action, arg, url_filter, types, method, status, clear)
+
+
+# ─── Session ──────────────────────────────────────────────
+
 
 @app.command()
-def session(
-    action: str = typer.Argument(..., help="Action: list, close <name>"),
-    name: Optional[str] = typer.Argument(None, help="Session name"),
-):
+def session(action: str = typer.Argument(..., help="Action: list, close <name>"),
+            name: Optional[str] = typer.Argument(None, help="Session name")):
+    dm = _daemon_call("/cmd/session", {"action": action, "name": name})
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
+
     sm = get_session_manager()
     match action:
         case "list":
@@ -589,175 +735,87 @@ def session(
             console.print(f"Unknown session action: {action}")
 
 
-# ─── Browser ─────────────────────────────────────────────
+# ─── CAPTCHA ──────────────────────────────────────────────
+
 
 @app.command()
-def browser(
-    ctx: typer.Context,
-    action: str = typer.Argument(..., help="Action: open, list, create, update, delete"),
-    arg1: Optional[str] = typer.Argument(None, help="Browser ID or URL"),
-    arg2: Optional[str] = typer.Argument(None, help="URL or arg"),
-    type: Optional[str] = typer.Option("chromium", "--type", help="Browser type"),
-    name: Optional[str] = typer.Option(None, "--name", help="Browser name"),
-    desc: Optional[str] = typer.Option(None, "--desc", help="Browser description"),
-    desc_append: Optional[str] = typer.Option(None, "--desc-append", help="Append to description"),
-    proxy: Optional[str] = typer.Option(None, "--proxy", help="Proxy URL"),
-    no_proxy: bool = typer.Option(False, "--no-proxy", help="Remove proxy"),
-    headed: bool = typer.Option(False, "--headed", help="Show browser window"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
-    config = get_config()
+def solve_captcha(ctx: typer.Context, session: Optional[str] = typer.Option(None, "--session", help="Session name")):
+    s = _req_session(ctx, session)
 
     async def _run():
-        manager = await get_browser_manager()
+        dm = _daemon_call("/cmd/solve-captcha", {"session": s})
+        if dm is not None:
+            return dm
+        page = await _get_page_with_state(s)
+        if not page:
+            return {"ok": False, "error": f"Session '{s}' not found"}
+        from freeact.captcha import solve_captcha_on_page
+        return await solve_captcha_on_page(page)
 
-        match action:
-            case "open":
-                session_name = _ctx_session(ctx, session)
-                if not arg1:
-                    return "Error: browser ID required"
-                if not session_name:
-                    return "Error: --session required"
-
-                url = arg2 or "about:blank"
-                if "://" not in url and url != "about:blank":
-                    url = "https://" + url
-
-                bc = config.browsers.get(arg1)
-                if not bc:
-                    bc = BrowserConfig(id=arg1, name=arg1, type=type or "chromium")
-                if headed:
-                    config.headless = False
-
-                page = await manager.get_page(arg1, bc, config)
-                await start_network_monitoring(page)
-                if url and url != "about:blank":
-                    await page.goto(url, wait_until="domcontentloaded")
-
-                await manager.save_page_url(arg1, session_name, page.url)
-                sm = get_session_manager()
-                sm.create(session_name, arg1)
-                return f"Browser '{arg1}' opened, session '{session_name}' started"
-
-            case "list":
-                if not config.browsers:
-                    return "No browsers configured"
-                lines = ["Browsers:"]
-                for bid, bc in config.browsers.items():
-                    px = f" proxy={bc.proxy}" if bc.proxy else ""
-                    lines.append(f"  {bid}: name={bc.name}, type={bc.type}, desc={bc.desc}{px}")
-                return "\n".join(lines)
-
-            case "create":
-                if not name:
-                    return "Error: --name required"
-                bid = manager.generate_browser_id()
-                bc = BrowserConfig(
-                    id=bid, name=name, type=type or "chromium",
-                    desc=desc or "", proxy=proxy or None,
-                )
-                config.browsers[bid] = bc
-                config.save()
-                return f"Browser created: id={bid}, name={name}, type={bc.type}"
-
-            case "update":
-                if not arg1:
-                    return "Error: browser ID required"
-                bc = config.browsers.get(arg1)
-                if not bc:
-                    return f"Error: browser '{arg1}' not found"
-                if name:
-                    bc.name = name
-                if desc:
-                    bc.desc = desc
-                if desc_append:
-                    bc.desc = (bc.desc + " " + desc_append) if bc.desc else desc_append
-                if no_proxy:
-                    bc.proxy = None
-                elif proxy:
-                    bc.proxy = proxy
-                config.save()
-                return f"Browser '{arg1}' updated"
-
-            case "delete":
-                if not arg1:
-                    return "Error: browser ID required"
-                config.browsers.pop(arg1, None)
-                config.save()
-                await manager.close_context(arg1)
-                return f"Browser '{arg1}' deleted"
-
-            case "connect":
-                if not arg1:
-                    return "Error: CDP URL or port required"
-                cdp_url = arg1
-                if cdp_url.isdigit():
-                    cdp_url = f"http://127.0.0.1:{cdp_url}"
-                session_name = _ctx_session(ctx, session)
-                if not session_name:
-                    return "Error: --session required for browser connect"
-
-                await manager.start()
-                browser = await manager._playwright.chromium.connect_over_cdp(cdp_url)
-                context = browser.contexts[0] if browser.contexts else await browser.new_context()
-                page = context.pages[0] if context.pages else await context.new_page()
-                await start_network_monitoring(page)
-                if arg2:
-                    nav_url = arg2
-                    if "://" not in nav_url:
-                        nav_url = "https://" + nav_url
-                    await page.goto(nav_url, wait_until="domcontentloaded")
-                    await manager.save_page_url("cdp", session_name, page.url)
-                sm = get_session_manager()
-                sm.create(session_name, "cdp")
-                manager._browsers["cdp"] = browser
-                manager._contexts["cdp"] = context
-                return f"Connected to {cdp_url}, session '{session_name}' started"
-
-            case "types":
-                from freeact.browser import find_browser, BROWSER_MAP
-                lines = ["Available real browsers:"]
-                for key, info in BROWSER_MAP.items():
-                    found = None
-                    for p in info["paths"]:
-                        if Path(p).exists():
-                            found = str(p)
-                            break
-                    status = found or "NOT FOUND"
-                    lines.append(f"  {info['name']}: {status}")
-                    lines.append(f"    profile: {info['profile']}")
-                return "\n".join(lines)
-
-            case _:
-                return f"Unknown browser action: {action}"
-
-    console.print(asyncio.run(_run()))
+    result = asyncio.run(_run())
+    if result.get("solved"):
+        console.print(f"[green]CAPTCHA solved![/green] Method: {result.get('method', 'auto')}")
+    else:
+        console.print(f"[yellow]CAPTCHA not solved: {result.get('error', 'unknown')}[/yellow]")
 
 
-# ─── Stealth Extract ─────────────────────────────────────
+# ─── Remote Assist ───────────────────────────────────────
+
+
+@app.command()
+def remote_assist(
+    ctx: typer.Context,
+    objective: Optional[str] = typer.Option("Manual browser intervention", "--objective", "-o",
+                                             help="What the user should do"),
+    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
+):
+    s = _req_session(ctx, session)
+
+    async def _run():
+        dm = _daemon_call("/cmd/remote-assist", {"session": s, "objective": objective})
+        if dm is not None:
+            return dm
+        page = await _get_page_with_state(s)
+        if not page:
+            return {"ok": False, "error": f"Session '{s}' not found"}
+        from freeact.remote import start_remote_assist
+        return await start_remote_assist(page, objective)
+
+    asyncio.run(_run())
+    console.print("[cyan]Remote assist active[/cyan]")
+    console.print(f"Objective: {objective}")
+    console.print("Browser window is visible. Complete the action, then the agent will continue.")
+
+
+# ─── Stealth Extract ──────────────────────────────────────
+
 
 @app.command()
 def stealth_extract(
     url: str = typer.Argument(..., help="URL to extract content from"),
-    content_type: str = typer.Option("markdown", "--content-type", help="Output format"),
+    content_type: str = typer.Option("markdown", "--content-type", help="Output format: markdown, html"),
     proxy: Optional[str] = typer.Option(None, "--proxy", help="Proxy URL"),
     timeout: int = typer.Option(30, "--timeout", help="Timeout in seconds"),
     output: Optional[str] = typer.Option(None, "--output", "-o", help="Save to file"),
 ):
+    dm_body = {"url": url, "content_type": content_type, "proxy": proxy,
+               "timeout": timeout, "output": output}
+    dm = _daemon_call("/cmd/stealth-extract", dm_body)
+    if dm is not None:
+        console.print(dm.get("result", dm.get("error", str(dm))))
+        return
+
     async def _run():
         from playwright.async_api import async_playwright
         from freeact.proxy import parse_proxy_config
         from freeact.stealth import apply_stealth_patches
-
         async with async_playwright() as pw:
             launch_opts = {"headless": True}
             if proxy:
                 launch_opts["proxy"] = parse_proxy_config(proxy)
-
             browser = await pw.chromium.launch(**launch_opts)
             context = await browser.new_context(viewport={"width": 1920, "height": 1080})
             await apply_stealth_patches(context)
-
             page = await context.new_page()
             try:
                 goto_url = url
@@ -773,11 +831,108 @@ def stealth_extract(
                 return f"Error extracting {url}: {e}"
             finally:
                 await browser.close()
-
     console.print(asyncio.run(_run()))
 
 
-# ─── Proxy ────────────────────────────────────────────────
+# ─── Live Browser ─────────────────────────────────────────
+
+
+@app.command()
+def connect(browser: Optional[str] = typer.Option("yandex", "--browser", "-b", help="Browser: yandex, chrome, edge"),
+            port: Optional[int] = typer.Option(0, "--port", "-p", help="CDP port (0=auto-detect)")):
+    dm = _daemon_call("/cmd/connect", {"browser": browser, "port": port})
+    if dm is not None:
+        if dm.get("ok"):
+            console.print(f"[green]{dm.get('message')}[/green]")
+            for p in dm.get("pages", []):
+                console.print(f"  Tab: {p.get('title', '?')[:80]}")
+        else:
+            console.print(f"[red]{dm.get('error')}[/red]")
+        return
+
+    async def _run():
+        from freeact.live import detect_browser_cdp, connect_to_live_browser
+        detected = detect_browser_cdp(browser or "yandex")
+        if detected:
+            console.print(f"[dim]Found {detected['browser']} on port {detected['port']}[/dim]")
+            return await connect_to_live_browser(detected["port"])
+        console.print("[yellow]Browser not running with CDP.[/yellow]")
+        console.print("Run: [green]freeact setup --browser yandex[/green] for one-time setup")
+        return {"ok": False, "error": "Browser not running with CDP. Run: freeact setup"}
+    result = asyncio.run(_run())
+    if result.get("ok"):
+        sm = get_session_manager()
+        sm.create("live", "live")
+        console.print(f"[green]Connected![/green] {result.get('tabs', 0)} tabs")
+        for p in result.get("pages", []):
+            console.print(f"  Tab: {p.get('title', '?')[:80]}")
+
+
+@app.command()
+def setup(browser: Optional[str] = typer.Option("yandex", "--browser", "-b", help="Browser: yandex, chrome, edge"),
+          port: Optional[int] = typer.Option(9222, "--port", "-p", help="CDP port")):
+    from freeact.live import setup_browser_cdp
+    result = setup_browser_cdp(browser, port or 9222)
+    if result.get("ok"):
+        console.print(f"[green]{result['message']}[/green]")
+    else:
+        console.print(f"[red]{result.get('error')}[/red]")
+
+
+@app.command()
+def tabs():
+    dm = _daemon_call("/cmd/tabs", {})
+    if dm is not None:
+        if dm.get("ok"):
+            for t in dm.get("tabs", []):
+                console.print(f"  [{t['id']}] {t['title'][:80]}")
+                console.print(f"       {t['url'][:100]}")
+        else:
+            console.print(f"[red]{dm.get('error')}[/red]")
+        return
+    from freeact.live import list_tabs, get_live_config
+    cfg = get_live_config()
+    result = asyncio.run(list_tabs(cfg.get("port", 9222)))
+    if result.get("ok"):
+        for t in result.get("tabs", []):
+            console.print(f"  [{t['id']}] {t['title'][:80]}")
+            console.print(f"       {t['url'][:100]}")
+    else:
+        console.print(f"[red]{result.get('error')}[/red]")
+
+
+@app.command()
+def tab(action: str = typer.Argument(..., help="switch <id>, close <id>, new [url]"),
+        arg: Optional[str] = typer.Argument(None, help="Tab index or URL")):
+    dm_path = {"switch": "/cmd/tab-switch", "close": "/cmd/tab-close", "new": "/cmd/tab-new"}.get(action)
+    if not dm_path:
+        console.print(f"Unknown action: {action}. Use: switch <N>, close <N>, new <url>")
+        return
+    if action != "new":
+        dm_body = {"index": int(arg) if arg else 0}
+    else:
+        dm_body = {"url": arg or "about:blank"}
+    dm = _daemon_call(dm_path, dm_body)
+    if dm is not None:
+        console.print(dm.get("message", dm.get("result", dm.get("error", json.dumps(dm)))))
+        return
+
+    async def _run():
+        from freeact.live import switch_tab, close_tab, new_tab, get_live_config
+        cfg = get_live_config()
+        port = cfg.get("port", 9222)
+        if action == "switch":
+            return await switch_tab(port, int(arg) if arg else 0)
+        elif action == "close":
+            return await close_tab(port, int(arg) if arg else 0)
+        elif action == "new":
+            return await new_tab(port, arg or "about:blank")
+    result = asyncio.run(_run())
+    console.print(result.get("message", result.get("error", str(result))))
+
+
+# ─── Utility ──────────────────────────────────────────────
+
 
 @app.command()
 def proxy(action: str = typer.Argument("list", help="Action: list")):
@@ -790,13 +945,9 @@ def proxy(action: str = typer.Argument("list", help="Action: list")):
             console.print(f"  {bc.name}: proxy={bc.proxy or 'none'}")
 
 
-# ─── get-skills ──────────────────────────────────────────
-
 @app.command()
-def get_skills(
-    topic: str = typer.Argument(..., help="Topic: core, advanced, main"),
-    skill_version: Optional[str] = typer.Option(None, "--skill-version", help="Skill version"),
-):
+def get_skills(topic: str = typer.Argument(..., help="Topic: core, advanced, main"),
+               skill_version: Optional[str] = typer.Option(None, "--skill-version", help="Skill version")):
     match topic:
         case "core":
             content = get_skills_core(skill_version or __version__)
@@ -810,95 +961,12 @@ def get_skills(
     console.print(content)
 
 
-# ─── Daemon ──────────────────────────────────────────────
-
 @app.command()
-def daemon(
-    action: str = typer.Argument("start", help="start or stop"),
-):
-    if action == "start":
-        from freeact.daemon import run_daemon
-        run_daemon()
-    elif action == "stop":
-        from freeact.daemon import send_daemon_command
-        result = send_daemon_command("/cmd/daemon", {"action": "stop"})
-        console.print(result.get("result", "Daemon stopped"))
-    elif action == "status":
-        from freeact.daemon import is_daemon_running
-        if is_daemon_running():
-            from freeact.daemon import send_daemon_command
-            result = send_daemon_command("/cmd/daemon", {"action": "status"})
-            console.print(f"Daemon running on port {result.get('port', 9341)}")
-        else:
-            console.print("Daemon not running")
-    else:
-        console.print("Usage: freeact daemon [start|stop|status]")
-
-
-# ─── Solve CAPTCHA ──────────────────────────────────────
-
-@app.command()
-def solve_captcha(
-    ctx: typer.Context,
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
-    s = _req_session(ctx, session)
-
-    async def _run():
-        from freeact.daemon import is_daemon_running, send_daemon_command
-        if is_daemon_running():
-            return send_daemon_command("/cmd/solve-captcha", {"session": s})
-
-        page = await _get_page(s)
-        if not page:
-            return {"ok": False, "error": f"Session '{s}' not found"}
-        from freeact.captcha import solve_captcha_on_page
-        return await solve_captcha_on_page(page)
-
-    result = asyncio.run(_run())
-    if result.get("solved"):
-        console.print(f"[green]CAPTCHA solved![/green] Method: {result.get('method', 'auto')}")
-    else:
-        console.print(f"[yellow]CAPTCHA not solved: {result.get('error', 'unknown')}[/yellow]")
-
-
-# ─── Remote Assist ──────────────────────────────────────
-
-@app.command()
-def remote_assist(
-    ctx: typer.Context,
-    objective: Optional[str] = typer.Option("Manual browser intervention", "--objective", "-o", help="What the user should do"),
-    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
-):
-    s = _req_session(ctx, session)
-
-    async def _run():
-        from freeact.daemon import is_daemon_running, send_daemon_command
-        if is_daemon_running():
-            return send_daemon_command("/cmd/remote-assist", {"session": s, "objective": objective})
-
-        page = await _get_page(s)
-        if not page:
-            return {"ok": False, "error": f"Session '{s}' not found"}
-        from freeact.remote import start_remote_assist
-        return await start_remote_assist(page, objective)
-
-    result = asyncio.run(_run())
-    console.print(f"[cyan]Remote assist active[/cyan]")
-    console.print(f"Objective: {objective}")
-    console.print("Browser window is visible. Complete the action, then the agent will continue.")
-
-
-# ─── Forge ──────────────────────────────────────────────
-
-@app.command()
-def forge(
-    name: str = typer.Option(..., "--name", help="Skill name"),
-    url: str = typer.Option(..., "--url", help="Target URL"),
-    desc: str = typer.Option("", "--desc", help="Description"),
-    params: Optional[str] = typer.Option(None, "--params", help="Parameters as JSON list"),
-    output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory"),
-):
+def forge(name: str = typer.Option(..., "--name", help="Skill name"),
+          url: str = typer.Option(..., "--url", help="Target URL"),
+          desc: str = typer.Option("", "--desc", help="Description"),
+          params: Optional[str] = typer.Option(None, "--params", help="Parameters as JSON list"),
+          output: Optional[str] = typer.Option(None, "--output", "-o", help="Output directory")):
     import json as _json
     parameters = []
     if params:
@@ -907,21 +975,14 @@ def forge(
         except _json.JSONDecodeError:
             console.print("Error: --params must be valid JSON")
             return
-
     if not parameters:
         parameters = [{"name": "keyword", "description": "Search keyword"}]
-
     from freeact.skillforge import explore_and_generate
-    result = explore_and_generate(
-        skill_name=name,
-        target_url=url,
-        description=desc or f"Extract data from {url}",
-        parameters=parameters,
-        output_dir=output,
-    )
-
+    result = explore_and_generate(skill_name=name, target_url=url,
+                                  description=desc or f"Extract data from {url}",
+                                  parameters=parameters, output_dir=output)
     if result.get("ok"):
-        console.print(f"[green]Skill generated![/green]")
+        console.print("[green]Skill generated![/green]")
         console.print(f"Output: {result['output_dir']}")
         for f in result.get("files", []):
             console.print(f"  - {f}")
@@ -929,125 +990,33 @@ def forge(
         console.print(f"[red]Error: {result.get('error')}[/red]")
 
 
-# ─── Live Browser ──────────────────────────────────────
-
-@app.command()
-def connect(
-    browser: Optional[str] = typer.Option("yandex", "--browser", "-b", help="Browser: yandex, chrome, edge"),
-    port: Optional[int] = typer.Option(0, "--port", "-p", help="CDP port (0=auto-detect)"),
-):
-    """Connect to your REAL running browser. Does NOT restart — needs browser with CDP enabled."""
-    from freeact.live import detect_browser_cdp, connect_to_live_browser, save_live_config
-
-    dm = _daemon_call("/cmd/connect", {"browser": browser, "port": port})
-    if dm is not None and dm.get("ok"):
-        console.print(f"[green]{dm.get('message')}[/green]")
-        for p in dm.get("pages", []):
-            console.print(f"  Tab: {p.get('title', '?')[:80]}")
-        return
-
-    async def _run():
-        detected = detect_browser_cdp(browser or "yandex")
-        if detected:
-            console.print(f"[dim]Found {detected['browser']} on port {detected['port']}[/dim]")
-            return await connect_to_live_browser(detected["port"])
-
-        console.print("[yellow]Browser not running with CDP.[/yellow]")
-        console.print("")
-        console.print("One-time setup (30 seconds):")
-        console.print(f"  [green]freeact setup --browser {browser}[/green]")
-        console.print("")
-        console.print("This creates a 'Yandex (FreeAct)' shortcut on your desktop.")
-        console.print("Use it for daily browsing — freeact connects anytime.")
-        return {"ok": False, "error": "Browser not running with CDP. Run: freeact setup"}
-
-    result = asyncio.run(_run())
-    if result.get("ok"):
-        sm = get_session_manager()
-        sm.create("live", "live")
-        console.print(f"[green]Connected![/green] {result.get('tabs', 0)} tabs — your profile, passwords, everything intact")
-        for p in result.get("pages", []):
-            console.print(f"  Tab: {p.get('title', '?')[:80]}")
+# ─── Main ─────────────────────────────────────────────────
 
 
-@app.command()
-def setup(
-    browser: Optional[str] = typer.Option("yandex", "--browser", "-b", help="Browser: yandex, chrome, edge"),
-    port: Optional[int] = typer.Option(9222, "--port", "-p", help="CDP port"),
-):
-    """Create desktop shortcut: browser with CDP always enabled. One-time setup."""
-    from freeact.live import setup_browser_cdp
-    result = setup_browser_cdp(browser, port or 9222)
-    if result.get("ok"):
-        console.print(f"[green]{result['message']}[/green]")
-    else:
-        console.print(f"[red]{result.get('error')}[/red]")
+@app.callback(invoke_without_command=True)
+def main(ctx: typer.Context,
+         session: Optional[str] = typer.Option(None, "--session", help="Session name"),
+         version: bool = typer.Option(False, "--version", "-v", help="Show version")):
+    ctx.ensure_object(dict)
+    ctx.obj["session"] = session
+    if version:
+        console.print(f"freeact v{__version__}")
+        raise typer.Exit()
+    if ctx.invoked_subcommand is None:
+        _auto_setup_shortcut()
+        console.print("[bold cyan]Free Browser Agent CLI[/bold cyan]")
+        console.print(f"Version: {__version__}")
+        console.print("Run [green]freeact --help[/green] for available commands")
 
 
-@app.command()
-def tabs():
-    """List all open tabs in your connected browser."""
-    dm = _daemon_call("/cmd/tabs", {})
-    if dm is not None and dm.get("ok"):
-        if dm.get("ok"):
-            for t in dm.get("tabs", []):
-                console.print(f"  [{t['id']}] {t['title'][:80]}")
-                console.print(f"       {t['url'][:100]}")
-        else:
-            console.print(f"[red]{dm.get('error')}[/red]")
-        return
-
-    from freeact.live import list_tabs, get_live_config
-    cfg = get_live_config()
-    result = asyncio.run(list_tabs(cfg.get("port", 9222)))
-    if result.get("ok"):
-        for t in result.get("tabs", []):
-            console.print(f"  [{t['id']}] {t['title'][:80]}")
-            console.print(f"       {t['url'][:100]}")
-    else:
-        console.print(f"[red]{result.get('error')}[/red]")
-
-
-@app.command()
-def tab(
-    action: str = typer.Argument(..., help="switch <id>, close <id>, new [url]"),
-    arg: Optional[str] = typer.Argument(None, help="Tab index or URL"),
-):
-    """Manage browser tabs: switch, close, open new."""
-    dm_path = None
-    dm_body = {}
-
-    if action == "switch":
-        dm_path = "/cmd/tab-switch"
-        dm_body = {"index": int(arg) if arg else 0}
-    elif action == "close":
-        dm_path = "/cmd/tab-close"
-        dm_body = {"index": int(arg) if arg else 0}
-    elif action == "new":
-        dm_path = "/cmd/tab-new"
-        dm_body = {"url": arg or "about:blank"}
-    else:
-        console.print(f"Unknown action: {action}. Use: switch <N>, close <N>, new <url>")
-        return
-
-    dm = _daemon_call(dm_path, dm_body)
-    if dm is not None and dm.get("ok"):
-        console.print(dm.get("message", dm.get("error", json.dumps(dm))))
-        return
-
-    async def _run():
-        from freeact.live import switch_tab, close_tab, new_tab, get_live_config
-        cfg = get_live_config()
-        port = cfg.get("port", 9222)
-        if action == "switch":
-            return await switch_tab(port, int(arg) if arg else 0)
-        elif action == "close":
-            return await close_tab(port, int(arg) if arg else 0)
-        elif action == "new":
-            return await new_tab(port, arg or "about:blank")
-
-    result = asyncio.run(_run())
-    console.print(result.get("message", result.get("error", str(result))))
+def _auto_setup_shortcut():
+    shortcut = Path.home() / "Desktop" / "Yandex (FreeAct).lnk"
+    if not shortcut.exists():
+        from freeact.live import setup_browser_cdp
+        try:
+            setup_browser_cdp("yandex")
+        except Exception:
+            pass
 
 
 def main_cli():

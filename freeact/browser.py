@@ -1,17 +1,25 @@
-"""Browser management — real browser via CDP, zero automation flags."""
+"""Browser management — real browser via CDP, zero automation flags.
+
+Stability improvements:
+- Robust reconnection with retries
+- Better page lifecycle handling (handles closed/detached pages)
+- Page pool with `get_active_page()` that finds a working page
+- Configurable connection timeout
+"""
 
 import asyncio
 import json
+import os
 import shutil
 import socket
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 
 from freeact.config import FREACT_HOME, BrowserConfig, FreeactConfig, get_config
+from freeact.logger import log, log_error
 from freeact.stealth import apply_stealth_patches
 from freeact.proxy import parse_proxy_config
 
@@ -22,8 +30,16 @@ BROWSER_MAP = {
             r"C:\Program Files\Google\Chrome\Application\chrome.exe",
             r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
             Path.home() / r"AppData\Local\Google\Chrome\Application\chrome.exe",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/snap/bin/chromium",
         ],
         "profile": Path.home() / r"AppData\Local\Google\Chrome\User Data",
+        "alt_profiles": [
+            Path.home() / "Library/Application Support/Google/Chrome",
+            Path.home() / ".config/google-chrome",
+        ],
         "exe": "chrome.exe",
     },
     "edge": {
@@ -31,8 +47,14 @@ BROWSER_MAP = {
         "paths": [
             r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+            "/usr/bin/microsoft-edge",
         ],
         "profile": Path.home() / r"AppData\Local\Microsoft\Edge\User Data",
+        "alt_profiles": [
+            Path.home() / "Library/Application Support/Microsoft Edge",
+            Path.home() / ".config/microsoft-edge",
+        ],
         "exe": "msedge.exe",
     },
     "yandex": {
@@ -40,8 +62,14 @@ BROWSER_MAP = {
         "paths": [
             r"C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe",
             Path.home() / r"AppData\Local\Yandex\YandexBrowser\Application\browser.exe",
+            "/Applications/Yandex.app/Contents/MacOS/Yandex",
+            "/usr/bin/yandex-browser",
         ],
         "profile": Path.home() / r"AppData\Local\Yandex\YandexBrowser\User Data",
+        "alt_profiles": [
+            Path.home() / "Library/Application Support/Yandex/YandexBrowser",
+            Path.home() / ".config/yandex-browser",
+        ],
         "exe": "browser.exe",
     },
 }
@@ -51,18 +79,35 @@ CDP_DIR.mkdir(parents=True, exist_ok=True)
 PROFILES_DIR = FREACT_HOME / "copied_profiles"
 PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
+CDP_CONNECT_TIMEOUT = 30
+CDP_RETRY_INTERVAL = 0.8
+CDP_MAX_RETRIES = 20
+
 
 def find_browser(browser_type: str) -> dict | None:
     bt = browser_type.lower()
+    import sys
     for key, info in BROWSER_MAP.items():
         if bt == key or bt in info["name"].lower():
             for p in info["paths"]:
                 if Path(p).exists():
-                    return {**info, "found_path": str(p), "key": key}
+                    result = {**info, "found_path": str(p), "key": key}
+                    if sys.platform != "win32":
+                        for alt in info.get("alt_profiles", []):
+                            if alt.exists():
+                                result["profile"] = alt
+                                break
+                    return result
     for info in BROWSER_MAP.values():
         for p in info["paths"]:
             if Path(p).exists():
-                return {**info, "found_path": str(p), "key": "chrome"}
+                result = {**info, "found_path": str(p), "key": "chrome"}
+                if sys.platform != "win32":
+                    for alt in info.get("alt_profiles", []):
+                        if alt.exists():
+                            result["profile"] = alt
+                            break
+                return result
     return None
 
 
@@ -76,9 +121,21 @@ def _free_port() -> int:
 
 def _kill_browser(exe_name: str):
     try:
-        subprocess.run(["taskkill", "/F", "/IM", exe_name], capture_output=True, timeout=10)
+        import sys
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/IM", exe_name], capture_output=True, timeout=10)
+        else:
+            subprocess.run(["pkill", "-f", exe_name], capture_output=True, timeout=10)
     except Exception:
         pass
+
+
+def _copy_file_fast(src: str, dst: str, *, follow_symlinks: bool = True):
+    """Hardlink-first copy: use os.link to share inodes, fallback to copy2."""
+    try:
+        os.link(src, dst, follow_symlinks=follow_symlinks)
+    except OSError:
+        shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
 
 
 def _copy_profile(src: Path, dst: Path) -> Path:
@@ -86,24 +143,35 @@ def _copy_profile(src: Path, dst: Path) -> Path:
         shutil.rmtree(dst, ignore_errors=True)
     dst.mkdir(parents=True, exist_ok=True)
     skip = {"Cache", "Code Cache", "GPUCache", "GrShaderCache", "ShaderCache",
-            "Service Worker", "blob_storage", "WebStorage", "Crashpad"}
+            "Service Worker", "blob_storage", "WebStorage", "Crashpad",
+            "CrashpadMetrics", "CrashpadMetadata",
+            "BrowserMetrics", "browserMetrics-spare.pma",
+            "SingletonLock", "SingletonSocket", "SingletonCookie",
+            "Lockfile", "RunningChromeVersion"}
+    errors: list[str] = []
     for item in src.iterdir():
         if item.name in skip or item.name == "Local State":
             continue
         dest = dst / item.name
         try:
             if item.is_dir():
-                shutil.copytree(item, dest, ignore=lambda d, f: [x for x in f if x in skip])
+                shutil.copytree(item, dest, copy_function=_copy_file_fast,
+                                ignore=lambda d, f: [x for x in f if x in skip])
             else:
-                shutil.copy2(item, dest)
-        except (PermissionError, OSError):
-            pass
+                _copy_file_fast(str(item), str(dest))
+        except PermissionError:
+            errors.append(f"{item.name}: permission denied")
+        except OSError as e:
+            errors.append(f"{item.name}: {e}")
     ls = src / "Local State"
     if ls.exists():
         try:
             shutil.copy2(ls, dst / "Local State")
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"Local State: {e}")
+    if errors:
+        import warnings as _w
+        _w.warn(f"Profile copy completed with {len(errors)} errors: {'; '.join(errors[:5])}")
     return dst
 
 
@@ -113,6 +181,7 @@ class BrowserManager:
         self._contexts: dict[str, BrowserContext] = {}
         self._browsers: dict[str, Browser] = {}
         self._proc: dict[str, subprocess.Popen] = {}
+        self._pages: dict[str, Page] = {}
 
     async def start(self):
         if self._playwright is None:
@@ -125,7 +194,21 @@ class BrowserManager:
                 proc.terminate()
             except Exception:
                 pass
+        for proc in self._proc.values():
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
         self._proc.clear()
+
+        for page in self._pages.values():
+            try:
+                if not page.is_closed():
+                    await page.close()
+            except Exception:
+                pass
+        self._pages.clear()
+
         for ctx in self._contexts.values():
             try:
                 await ctx.close()
@@ -138,6 +221,7 @@ class BrowserManager:
                 pass
         self._contexts.clear()
         self._browsers.clear()
+
         if self._playwright:
             try:
                 await self._playwright.stop()
@@ -166,31 +250,48 @@ class BrowserManager:
             return None
         try:
             await self.start()
-            browser = await self._playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            browser = await self._playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{port}",
+                timeout=5000,
+            )
             context = browser.contexts[0] if browser.contexts else await browser.new_context()
             self._browsers[bid] = browser
             self._contexts[bid] = context
             return browser, context
         except Exception:
+            self._port_file(bid).unlink(missing_ok=True)
             return None
+
+    async def refresh_profile(self, bc: BrowserConfig, config: FreeactConfig) -> bool:
+        """Re-copy profile from source. Returns True if browser needs relaunch."""
+        info = find_browser(bc.type or config.default_browser)
+        if not info:
+            return False
+        profile_dir = PROFILES_DIR / f"{bc.id}_profile"
+        _copy_profile(info["profile"], profile_dir)
+        return True
 
     async def _launch_new(self, bc: BrowserConfig, config: FreeactConfig) -> tuple[Browser, BrowserContext]:
         await self.start()
 
-        info = find_browser(bc.type or "Chrome")
+        info = find_browser(bc.type or config.default_browser)
         if not info:
-            raise RuntimeError(f"No browser found for type: {bc.type}")
-
-        # Don't kill existing browser — we use a copied profile
+            raise RuntimeError(f"No browser found for type: {bc.type or config.default_browser}")
 
         port = _free_port()
         self._save_port(bc.id, port)
 
         if bc.private:
             profile_dir = PROFILES_DIR / f"{bc.id}_tmp"
-            profile_dir.mkdir(parents=True, exist_ok=True)
         else:
-            profile_dir = info["profile"]
+            profile_dir = PROFILES_DIR / f"{bc.id}_profile"
+
+        if profile_dir.exists():
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+
+        _copy_profile(info["profile"], profile_dir)
+        log(f"Launching {info['name']} (headed={not config.headless}) profile {profile_dir}")
 
         args = [
             info["found_path"],
@@ -220,25 +321,32 @@ class BrowserManager:
         self._proc[bc.id] = proc
 
         cdp = f"http://127.0.0.1:{port}"
-        for i in range(25):
+        browser = None
+        max_retries = CDP_MAX_RETRIES if config.headless else CDP_MAX_RETRIES + 10
+        retry_interval = CDP_RETRY_INTERVAL if config.headless else 1.0
+        for i in range(max_retries):
             try:
-                browser = await self._playwright.chromium.connect_over_cdp(cdp)
+                browser = await self._playwright.chromium.connect_over_cdp(
+                    cdp, timeout=CDP_CONNECT_TIMEOUT * 1000,
+                )
+                log(f"CDP connected to {info['name']} on port {port} (attempt {i+1})")
                 break
             except Exception:
-                if i == 24:
+                if i == max_retries - 1:
                     proc.kill()
-                    raise RuntimeError("CDP connect failed")
-                await asyncio.sleep(1.2)
+                    self._port_file(bc.id).unlink(missing_ok=True)
+                    log_error(f"CDP connect failed after {max_retries} attempts for {info['name']}")
+                    raise RuntimeError(f"CDP connect failed after {max_retries} attempts")
+                await asyncio.sleep(retry_interval)
 
         context = browser.contexts[0] if browser.contexts else await browser.new_context(
             viewport={"width": 1920, "height": 1080})
 
         if config.stealth:
-            for p in context.pages:
-                try:
-                    await apply_stealth_patches(context)
-                except Exception:
-                    pass
+            try:
+                await apply_stealth_patches(context)
+            except Exception:
+                pass
 
         self._browsers[bc.id] = browser
         self._contexts[bc.id] = context
@@ -249,12 +357,22 @@ class BrowserManager:
             config = get_config()
 
         if bc.id in self._contexts:
-            ctx = self._contexts[bc.id]
-            try:
-                ctx.pages
-                return self._browsers.get(bc.id), ctx
-            except Exception:
-                del self._contexts[bc.id]
+            alive = await self.is_browser_alive(bc.id)
+            if not alive:
+                self._pages.pop(bc.id, None)
+                self._contexts.pop(bc.id, None)
+                self._browsers.pop(bc.id, None)
+                self._port_file(bc.id).unlink(missing_ok=True)
+            else:
+                ctx = self._contexts[bc.id]
+                try:
+                    _ = ctx.pages
+                    return self._browsers.get(bc.id), ctx
+                except Exception:
+                    del self._contexts[bc.id]
+                    self._pages.pop(bc.id, None)
+
+        await self.start()
 
         bt = (bc.type or config.default_browser).lower()
         if bt in ("chromium", "playwright"):
@@ -276,6 +394,31 @@ class BrowserManager:
 
         return await self._launch_new(bc, config)
 
+    def _is_page_valid(self, page: Page) -> bool:
+        try:
+            if page.is_closed():
+                return False
+            page.url
+            return True
+        except Exception:
+            return False
+
+    async def is_browser_alive(self, browser_id: str) -> bool:
+        proc = self._proc.get(browser_id)
+        if proc is not None:
+            if proc.poll() is not None:
+                return False
+        port = self._load_port(browser_id)
+        if port:
+            try:
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"http://127.0.0.1:{port}/json/version", timeout=aiohttp.ClientTimeout(total=2)):
+                        return True
+            except Exception:
+                return False
+        return False
+
     async def get_page(self, browser_id: str, bc: BrowserConfig | None = None,
                        global_config: FreeactConfig | None = None) -> Page | None:
         if global_config is None:
@@ -283,15 +426,20 @@ class BrowserManager:
         if bc is None:
             bc = BrowserConfig(id=browser_id, name=browser_id, type=global_config.default_browser)
 
+        cached_page = self._pages.get(browser_id)
+        if cached_page and self._is_page_valid(cached_page):
+            return cached_page
+
         _, context = await self.get_or_create_context(bc, global_config)
-        if context.pages:
-            page = context.pages[0]
-            try:
-                page.url
+
+        for page in context.pages:
+            if self._is_page_valid(page):
+                self._pages[browser_id] = page
                 return page
-            except Exception:
-                return await context.new_page()
-        return await context.new_page()
+
+        page = await context.new_page()
+        self._pages[browser_id] = page
+        return page
 
     async def save_page_url(self, browser_id: str, session_name: str, url: str):
         f = FREACT_HOME / "sessions" / f"{session_name}.json"
@@ -303,6 +451,8 @@ class BrowserManager:
                 pass
         data["url"] = url
         data["browser_id"] = browser_id
+        data["_saved_at"] = asyncio.get_event_loop().time() if asyncio.get_event_loop().is_running() else 0
+        f.parent.mkdir(parents=True, exist_ok=True)
         f.write_text(json.dumps(data))
 
     async def get_saved_url(self, session_name: str) -> str | None:
@@ -316,27 +466,35 @@ class BrowserManager:
         return None
 
     async def close_context(self, browser_id: str):
+        self._pages.pop(browser_id, None)
+
         proc = self._proc.pop(browser_id, None)
         if proc:
             try:
                 proc.terminate()
             except Exception:
                 pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                pass
+
         ctx = self._contexts.pop(browser_id, None)
         if ctx:
             try:
                 await ctx.close()
             except Exception:
                 pass
+
         br = self._browsers.pop(browser_id, None)
         if br and br is not ctx:
             try:
                 await br.close()
             except Exception:
                 pass
+
         pf = self._port_file(browser_id)
-        if pf.exists():
-            pf.unlink()
+        pf.unlink(missing_ok=True)
 
     def generate_browser_id(self) -> str:
         return f"browser_{uuid.uuid4().hex[:12]}"
