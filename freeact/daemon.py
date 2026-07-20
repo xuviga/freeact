@@ -151,6 +151,15 @@ class DaemonServer:
                         for popup in all_pages:
                             if popup != cached and not popup.is_closed():
                                 try:
+                                    import asyncio as _asyncio
+                                    for _ in range(25):
+                                        popup_url = popup.url
+                                        if popup_url and popup_url not in ("about:blank", ""):
+                                            if "accounts.google.com" in popup_url or "gsi/select" in popup_url:
+                                                self._page_cache[session_name] = popup
+                                                self._page_cache_urls[session_name] = popup_url
+                                                return popup, s
+                                        await _asyncio.sleep(0.3)
                                     popup_url = popup.url
                                     if popup_url and popup_url not in ("about:blank", ""):
                                         self._page_cache[session_name] = popup
