@@ -133,7 +133,7 @@ def browser(
     action: str = typer.Argument(..., help="open, list, create, update, delete, types, connect"),
     arg1: Optional[str] = typer.Argument(None, help="Browser ID or URL"),
     arg2: Optional[str] = typer.Argument(None, help="URL"),
-    type: Optional[str] = typer.Option("chromium", "--type", help="Browser type (chrome/yandex/edge/chromium)"),
+    type: Optional[str] = typer.Option(None, "--type", help="Browser type (chrome/yandex/edge/chromium). Defaults to config default_browser"),
     name: Optional[str] = typer.Option(None, "--name", help="Browser name"),
     desc: Optional[str] = typer.Option(None, "--desc", help="Browser description"),
     desc_append: Optional[str] = typer.Option(None, "--desc-append", help="Append to description"),
