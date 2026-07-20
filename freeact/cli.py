@@ -207,7 +207,7 @@ def browser(
                         manager._browsers[arg1] = lb
                         manager._contexts[arg1] = lb.contexts[0]
             if page is None:
-                return f"Error: Cannot open browser. Check browser is not already running."
+                return f"Error: No live browser. Run 'freeact connect' first."
             if refresh_profile:
                 await manager.refresh_profile(bc, page_config)
             await _ensure_page_state(page)

@@ -375,11 +375,11 @@ class BrowserManager:
         await self.start()
 
         bt = (bc.type or config.default_browser).lower()
-        if bt in ("chromium", "playwright"):
+        if bt not in ("chromium", "playwright"):
             raise RuntimeError(
-                "Chromium/Playwright browser is disabled. "
-                "Use only real browsers: yandex, chrome, edge. "
-                "Set config.default_browser to 'yandex'."
+                f"Direct browser launch for '{bt}' is disabled. "
+                "Use 'freeact connect' to attach to your real browser, "
+                "then 'freeact --session <name> browser open live <url>'."
             )
 
         reconnected = await self._try_reconnect(bc.id)

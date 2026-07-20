@@ -485,6 +485,8 @@ class DaemonServer:
                     url = "https://" + url
 
                 live_page = await self._ensure_live_connected()
+                if not live_page:
+                    return {"ok": False, "error": "No live browser. Run 'freeact connect' first to use your real browser."}
                 if live_page:
                     agent_tabs = sum(1 for k in self._page_cache if k != "live" and not k.endswith("_target"))
                     if agent_tabs >= 5:
