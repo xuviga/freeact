@@ -75,6 +75,7 @@ class DaemonServer:
         self._running = True
         self._page_cache: dict[str, object] = {}
         self._page_cache_urls: dict[str, str] = {}
+        self._page_targets: dict[str, str] = {}
 
     async def _ensure_state_engine(self, session_name: str, page):
         if session_name not in self._state_initialized:
@@ -147,31 +148,20 @@ class DaemonServer:
         if cached is not None:
             try:
                 if not cached.is_closed():
-                    ctx = cached.context
-                    all_pages = ctx.pages
-                    if len(all_pages) > 1:
-                        for popup in all_pages:
-                            if popup != cached and not popup.is_closed():
-                                try:
-                                    import asyncio as _asyncio
-                                    for _ in range(25):
-                                        popup_url = popup.url
-                                        if popup_url and popup_url not in ("about:blank", ""):
-                                            if "accounts.google.com" in popup_url or "gsi/select" in popup_url:
-                                                self._page_cache[session_name] = popup
-                                                self._page_cache_urls[session_name] = popup_url
-                                                return popup, s
-                                        await _asyncio.sleep(0.3)
-                                    popup_url = popup.url
-                                    if popup_url and popup_url not in ("about:blank", ""):
-                                        self._page_cache[session_name] = popup
-                                        self._page_cache_urls[session_name] = popup_url
-                                        return popup, s
-                                except Exception:
-                                    pass
-                    cur_url = cached.url
-                    if self._page_cache_urls.get(session_name) == cur_url:
-                        return cached, s
+                    target_id = self._page_targets.get(session_name)
+                    if target_id:
+                        try:
+                            cdp_id = await cached.evaluate("() => window.__freeact_target_id || ''")
+                            if cdp_id == target_id:
+                                cur_url = cached.url
+                                self._page_cache_urls[session_name] = cur_url
+                                return cached, s
+                        except Exception:
+                            pass
+                    else:
+                        cur_url = cached.url
+                        if self._page_cache_urls.get(session_name) == cur_url:
+                            return cached, s
             except Exception:
                 pass
             self._page_cache.pop(session_name, None)
@@ -195,6 +185,7 @@ class DaemonServer:
                 page = await contexts[0].new_page()
                 self._page_cache[session_name] = page
                 self._page_cache_urls[session_name] = page.url
+                await self._save_page_target(session_name, page, port)
                 return page, s
             except Exception:
                 return None, None
@@ -443,6 +434,25 @@ class DaemonServer:
         )
         return {"ok": True, "result": result}
 
+    async def _save_page_target(self, session_name: str, page, port: int = 9222):
+        try:
+            import http.client
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            conn.request("GET", "/json")
+            targets = json.loads(conn.getresponse().read().decode())
+            conn.close()
+            p_url = page.url
+            for t in targets:
+                if t.get("url") == p_url or t.get("id") and t["id"] == self._page_targets.get(session_name):
+                    self._page_targets[session_name] = t.get("id", "")
+                    return
+            for t in targets:
+                if t.get("type") == "page":
+                    self._page_targets[session_name] = t.get("id", "")
+                    return
+        except Exception:
+            pass
+
     async def _cmd_browser(self, body: dict) -> dict:
         action = body["action"]
         match action:
@@ -452,6 +462,35 @@ class DaemonServer:
                 url = body.get("url", "about:blank")
                 if "://" not in url and url != "about:blank":
                     url = "https://" + url
+
+                live_page = self._page_cache.get("live")
+                if live_page and not live_page.is_closed():
+                    agent_tabs = sum(1 for k in self._page_cache if k != "live" and not k.endswith("_target"))
+                    if agent_tabs >= 5:
+                        return {"ok": False, "error": "Agent tab limit (5) reached. Close a session first."}
+                    try:
+                        page = await live_page.context.new_page()
+                        target_info = json.loads(
+                            (await page.evaluate("JSON.stringify({id: (window.__freeact_target_id || '')})"))
+                            if False else "{}"
+                        )
+                        import http.client
+                    await self._save_page_target(session_name, page)
+                    await self._ensure_state_engine(session_name, page)
+                        if url and url != "about:blank":
+                            try:
+                                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                                await wait_for_dom_stable(page, timeout_ms=5000)
+                            except Exception as e:
+                                return {"ok": False, "error": f"Navigation failed: {e}"}
+                        sm = get_session_manager()
+                        sm.create(session_name, browser_id)
+                        self._page_cache[session_name] = page
+                        self._page_cache_urls[session_name] = page.url
+                        return {"ok": True,
+                                "result": f"New tab opened in live browser, session '{session_name}' started"}
+                    except Exception as e:
+                        return {"ok": False, "error": f"Failed to create tab: {e}"}
 
                 bc = self.config.browsers.get(browser_id)
                 if not bc:
