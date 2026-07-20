@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>freeact</id>
+    <version>0.4.0</version>
+    <title>freeact — The Browser Tamer</title>
+    <authors>xuviga</authors>
+    <projectUrl>https://github.com/xuviga/freeact</projectUrl>
+    <license type="expression">MIT</license>
+    <projectSourceUrl>https://github.com/xuviga/freeact</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/xuviga/freeact/issues</bugTrackerUrl>
+    <tags>browser-automation ai-agents web-scraping playwright cli anti-bot stealth cdp opencode claude-code undetectable</tags>
+    <summary>Undetectable browser automation CLI for AI agents via real installed browsers</summary>
+    <description>freeact controls REAL installed browsers (Yandex, Chrome, Edge) through CDP without automation flags. Anti-bot systems cannot detect it. Features: daemon mode, free CAPTCHA solver, stealth patches, network monitoring, live browser connection, Skill Forge. Uses your actual browser profile with real cookies.</description>
+    <dependencies>
+      <dependency id="python" version="3.12.0" />
+    </dependencies>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>
