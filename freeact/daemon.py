@@ -77,6 +77,30 @@ class DaemonServer:
         self._page_cache_urls: dict[str, str] = {}
         self._page_targets: dict[str, str] = {}
 
+    async def _ensure_live_connected(self):
+        if self._page_cache.get("live") and not self._page_cache["live"].is_closed():
+            return self._page_cache["live"]
+        try:
+            from freeact.live import detect_browser_cdp
+            detected = detect_browser_cdp()
+            if not detected:
+                return None
+            await self.manager.start()
+            lb = await self.manager._playwright.chromium.connect_over_cdp(
+                f"http://127.0.0.1:{detected['port']}"
+            )
+            ctx = lb.contexts[0] if lb.contexts else await lb.new_context()
+            import uuid
+            tag = str(uuid.uuid4())
+            live_page = await ctx.new_page()
+            await live_page.evaluate(f"window.__freeact_agent_tag = '{tag}'")
+            self._page_targets["live"] = tag
+            self._page_cache["live"] = live_page
+            self._page_cache_urls["live"] = live_page.url
+            return live_page
+        except Exception:
+            return None
+
     async def _ensure_state_engine(self, session_name: str, page):
         if session_name not in self._state_initialized:
             try:
@@ -148,20 +172,23 @@ class DaemonServer:
         if cached is not None:
             try:
                 if not cached.is_closed():
-                    target_id = self._page_targets.get(session_name)
-                    if target_id:
+                    expected_tag = self._page_targets.get(session_name)
+                    if expected_tag:
                         try:
-                            cdp_id = await cached.evaluate("() => window.__freeact_target_id || ''")
-                            if cdp_id == target_id:
-                                cur_url = cached.url
-                                self._page_cache_urls[session_name] = cur_url
+                            actual_tag = await cached.evaluate("() => window.__freeact_agent_tag || ''")
+                            if actual_tag == expected_tag:
+                                self._page_cache_urls[session_name] = cached.url
                                 return cached, s
                         except Exception:
                             pass
-                    else:
+                        saved_url = self._page_cache_urls.get(session_name)
                         cur_url = cached.url
-                        if self._page_cache_urls.get(session_name) == cur_url:
+                        if saved_url and cur_url and saved_url == cur_url:
+                            self._page_targets[session_name] = ""
                             return cached, s
+                    else:
+                        self._page_cache_urls[session_name] = cached.url
+                        return cached, s
             except Exception:
                 pass
             self._page_cache.pop(session_name, None)
@@ -182,10 +209,16 @@ class DaemonServer:
                 contexts = browser.contexts
                 if not contexts:
                     return None, None
+                import uuid
+                tag = str(uuid.uuid4())
                 page = await contexts[0].new_page()
                 self._page_cache[session_name] = page
                 self._page_cache_urls[session_name] = page.url
-                await self._save_page_target(session_name, page, port)
+                self._page_targets[session_name] = tag
+                try:
+                    await page.evaluate(f"window.__freeact_agent_tag = '{tag}'")
+                except Exception:
+                    pass
                 return page, s
             except Exception:
                 return None, None
@@ -210,8 +243,15 @@ class DaemonServer:
                 )
                 contexts = browser.contexts
                 if contexts:
+                    import uuid
+                    tag = str(uuid.uuid4())
                     page = await contexts[0].new_page()
                     self.manager._pages[s.browser_id] = page
+                    self._page_targets[s.browser_id] = tag
+                    try:
+                        await page.evaluate(f"window.__freeact_agent_tag = '{tag}'")
+                    except Exception:
+                        pass
                 if page:
                     self.manager._browsers[s.browser_id] = browser
                     self.manager._contexts[s.browser_id] = contexts[0]
@@ -434,25 +474,6 @@ class DaemonServer:
         )
         return {"ok": True, "result": result}
 
-    async def _save_page_target(self, session_name: str, page, port: int = 9222):
-        try:
-            import http.client
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
-            conn.request("GET", "/json")
-            targets = json.loads(conn.getresponse().read().decode())
-            conn.close()
-            p_url = page.url
-            for t in targets:
-                if t.get("url") == p_url or t.get("id") and t["id"] == self._page_targets.get(session_name):
-                    self._page_targets[session_name] = t.get("id", "")
-                    return
-            for t in targets:
-                if t.get("type") == "page":
-                    self._page_targets[session_name] = t.get("id", "")
-                    return
-        except Exception:
-            pass
-
     async def _cmd_browser(self, body: dict) -> dict:
         action = body["action"]
         match action:
@@ -463,26 +484,23 @@ class DaemonServer:
                 if "://" not in url and url != "about:blank":
                     url = "https://" + url
 
-                live_page = self._page_cache.get("live")
-                if live_page and not live_page.is_closed():
+                live_page = await self._ensure_live_connected()
+                if live_page:
                     agent_tabs = sum(1 for k in self._page_cache if k != "live" and not k.endswith("_target"))
                     if agent_tabs >= 5:
                         return {"ok": False, "error": "Agent tab limit (5) reached. Close a session first."}
                     try:
+                        import uuid
+                        tag = str(uuid.uuid4())
                         page = await live_page.context.new_page()
-                        target_info = json.loads(
-                            (await page.evaluate("JSON.stringify({id: (window.__freeact_target_id || '')})"))
-                            if False else "{}"
-                        )
-                        import http.client
-                    await self._save_page_target(session_name, page)
-                    await self._ensure_state_engine(session_name, page)
                         if url and url != "about:blank":
                             try:
                                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
                                 await wait_for_dom_stable(page, timeout_ms=5000)
                             except Exception as e:
                                 return {"ok": False, "error": f"Navigation failed: {e}"}
+                        await page.evaluate(f"window.__freeact_agent_tag = '{tag}'")
+                        self._page_targets[session_name] = tag
                         sm = get_session_manager()
                         sm.create(session_name, browser_id)
                         self._page_cache[session_name] = page
@@ -662,31 +680,14 @@ class DaemonServer:
         return result
 
     async def _cmd_connect(self, body: dict) -> dict:
-        from freeact.live import detect_browser_cdp
-        detected = detect_browser_cdp(body.get("browser", "yandex"))
-        if detected:
-            try:
-                await self.manager.start()
-                browser = await self.manager._playwright.chromium.connect_over_cdp(
-                    f"http://127.0.0.1:{detected['port']}"
-                )
-                contexts = browser.contexts
-                if not contexts:
-                    return {"ok": False, "error": "Browser has no contexts"}
-                page = await contexts[0].new_page()
-                sm = get_session_manager()
-                sm.create("live", "live")
-                self._page_cache["live"] = page
-                self._page_cache_urls["live"] = page.url
-                return {
-                    "ok": True,
-                    "browser": detected["browser"],
-                    "port": detected["port"],
-                    "tabs": len(contexts[0].pages),
-                    "message": f"Connected to {detected['browser']} on port {detected['port']} — new tab created",
-                }
-            except Exception as e:
-                return {"ok": False, "error": f"Connection failed: {e}"}
+        live_page = await self._ensure_live_connected()
+        if live_page:
+            sm = get_session_manager()
+            sm.create("live", "live")
+            return {
+                "ok": True,
+                "message": "Connected to live browser — new tab created",
+            }
         return {"ok": False, "error": "Browser not running with CDP. Run: freeact setup"}
 
     async def _cmd_tabs(self, body: dict) -> dict:
