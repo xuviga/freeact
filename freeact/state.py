@@ -71,7 +71,7 @@ _INIT_SCRIPT = """
         if (el.placeholder) attrs.placeholder = el.placeholder;
         if (el.getAttribute('aria-label')) attrs['aria-label'] = el.getAttribute('aria-label');
         if (el.getAttribute('role')) attrs.role = el.getAttribute('role');
-        if (el.value !== undefined && el.value !== '') attrs.value = el.value;
+        if (el.value !== undefined && el.value !== '') attrs.value = el.type === 'password' ? '******' : el.value;
         if (el.href) attrs.href = el.href;
         if (el.checked !== undefined) attrs.checked = el.checked;
         if (el.disabled) attrs.disabled = true;
@@ -103,7 +103,8 @@ _INIT_SCRIPT = """
 
             const tag = el.tagName.toLowerCase();
             const attrs = getAttrs(el);
-            const text = (el.textContent || el.value || el.placeholder || el.getAttribute('aria-label') || '').trim().substring(0, 100);
+            const rawValue = el.type === 'password' && el.value ? '******' : el.value;
+            const text = (el.textContent || rawValue || el.placeholder || el.getAttribute('aria-label') || '').trim().substring(0, 100);
 
             let attrStr = '';
             for (const [k, v] of Object.entries(attrs)) {
@@ -124,7 +125,7 @@ _INIT_SCRIPT = """
                 id: el.id || null,
                 name: el.getAttribute('name') || null,
                 type: el.type || null,
-                value: el.value || null,
+                value: el.type === 'password' && el.value ? '******' : (el.value || null),
                 placeholder: el.placeholder || null,
                 href: el.href || null,
                 disabled: el.disabled || false,

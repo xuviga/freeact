@@ -691,10 +691,35 @@ class DaemonServer:
         return {"ok": False, "error": "Browser not running with CDP. Run: freeact setup"}
 
     async def _cmd_tabs(self, body: dict) -> dict:
-        from freeact.live import list_tabs, get_live_config
+        from freeact.live import get_live_config
         cfg = get_live_config()
         port = body.get("port", cfg.get("port", 9222))
-        return await list_tabs(port)
+        import http.client
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=3)
+            conn.request("GET", "/json/list")
+            pages = json.loads(conn.getresponse().read().decode())
+            conn.close()
+        except Exception:
+            return {"ok": False, "error": "Cannot connect to browser"}
+        agent_tags = set(self._page_targets.values())
+        tabs = []
+        for i, p in enumerate(pages):
+            if p.get("type") != "page":
+                continue
+            is_agent = p.get("id", "") in agent_tags
+            if not is_agent:
+                for tag in agent_tags:
+                    if p.get("url", "").endswith(tag) or tag in p.get("title", ""):
+                        is_agent = True
+                        break
+            tabs.append({
+                "id": i,
+                "title": p.get("title", "")[:80],
+                "url": p.get("url", ""),
+                "agent": is_agent,
+            })
+        return {"ok": True, "tabs": tabs, "count": len(tabs)}
 
     async def _cmd_tab_switch(self, body: dict) -> dict:
         from freeact.live import switch_tab, get_live_config

@@ -194,6 +194,20 @@ def browser(
                 api_key=config.api_key,
             )
             page = await manager.get_page(arg1, bc, page_config)
+            if page is None:
+                from freeact.live import get_live_config, detect_browser_cdp
+                detected = detect_browser_cdp()
+                if detected:
+                    import uuid
+                    await manager.start()
+                    lb = await manager._playwright.chromium.connect_over_cdp(f"http://127.0.0.1:{detected['port']}")
+                    if lb.contexts:
+                        page = await lb.contexts[0].new_page()
+                        manager._pages[arg1] = page
+                        manager._browsers[arg1] = lb
+                        manager._contexts[arg1] = lb.contexts[0]
+            if page is None:
+                return f"Error: Cannot open browser. Check browser is not already running."
             if refresh_profile:
                 await manager.refresh_profile(bc, page_config)
             await _ensure_page_state(page)
@@ -957,7 +971,8 @@ def tabs():
     if dm is not None:
         if dm.get("ok"):
             for t in dm.get("tabs", []):
-                console.print(f"  [{t['id']}] {t['title'][:80]}")
+                tag = " [green]agent[/green]" if t.get("agent") else ""
+                console.print(f"  [{t['id']}]{tag} {t['title'][:80]}")
                 console.print(f"       {t['url'][:100]}")
         else:
             console.print(f"[red]{dm.get('error')}[/red]")
