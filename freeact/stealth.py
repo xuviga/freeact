@@ -124,24 +124,7 @@ STEALTH_INIT_SCRIPT = """
                             window.__freeact_google_cred = response;
                             return origCb ? origCb(response) : response;
                         };
-                        const result = origInit(cfg);
-                        setTimeout(() => {
-                            try {
-                                const c = v.accounts.oauth2.initCodeClient({
-                                    client_id: cfg.client_id,
-                                    scope: 'openid email profile',
-                                    ux_mode: 'popup',
-                                    callback: function(r) {
-                                        window.__freeact_google_cred = r;
-                                        if (cfg.callback && r && r.code) {
-                                            cfg.callback({credential: r.code});
-                                        }
-                                    }
-                                });
-                                c.requestCode();
-                            } catch(e) { window.__freeact_oauth_err = e.message; }
-                        }, 500);
-                        return result;
+                        return origInit(cfg);
                     };
                 }
             },

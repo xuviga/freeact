@@ -108,6 +108,8 @@ class DaemonServer:
                 "/cmd/reload": self._cmd_reload,
                 "/cmd/get": self._cmd_get,
                 "/cmd/eval": self._cmd_eval,
+                "/cmd/frames": self._cmd_frames,
+                "/cmd/frame-click": self._cmd_frame_click,
                 "/cmd/screenshot": self._cmd_screenshot,
                 "/cmd/wait": self._cmd_wait,
                 "/cmd/network": self._cmd_network,
@@ -357,6 +359,50 @@ class DaemonServer:
             return {"ok": False, "error": "Session not found"}
         result = await h_eval(page, body["js"])
         return {"ok": True, "result": result}
+
+    async def _cmd_frames(self, body: dict) -> dict:
+        page, _ = await self._get_page(body["session"])
+        if not page:
+            return {"ok": False, "error": "Session not found"}
+        frames = []
+        for i, frame in enumerate(page.frames):
+            try:
+                frames.append({"index": i, "name": frame.name, "url": frame.url})
+            except Exception:
+                frames.append({"index": i, "name": "?", "url": "?"})
+        return {"ok": True, "result": frames}
+
+    async def _cmd_frame_click(self, body: dict) -> dict:
+        page, _ = await self._get_page(body["session"])
+        if not page:
+            return {"ok": False, "error": "Session not found"}
+        frame_index = body.get("frame_index", -1)
+        selector = body.get("selector", "button")
+        target_frame = None
+        if frame_index >= 0 and frame_index < len(page.frames):
+            target_frame = page.frames[frame_index]
+        else:
+            for f in page.frames:
+                if "accounts.google.com" in f.url or "gsi" in f.url:
+                    target_frame = f
+                    break
+            if not target_frame:
+                for f in page.frames:
+                    if f != page.main_frame:
+                        target_frame = f
+                        break
+        if not target_frame:
+            return {"ok": False, "error": "No suitable frame found"}
+        try:
+            btn = target_frame.locator(selector).first
+            await btn.click(timeout=5000, force=True)
+            return {"ok": True, "result": f"Clicked {selector} in {target_frame.url}"}
+        except Exception as e:
+            try:
+                await target_frame.evaluate(f"document.querySelector('{selector}')?.click()")
+                return {"ok": True, "result": f"Clicked {selector} via JS in {target_frame.url}"}
+            except Exception:
+                return {"ok": False, "error": str(e)}
 
     async def _cmd_screenshot(self, body: dict) -> dict:
         page, _ = await self._get_page(body["session"])

@@ -634,6 +634,60 @@ async def _get_direct(s: str, what: str, arg: str | None, selector: str | None):
 
 
 @app.command()
+def frames(
+    ctx: typer.Context,
+    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
+):
+    s = _req_session(ctx, session)
+    _try_daemon("/cmd/frames", {"session": s}, lambda: _frames_direct(s))
+
+
+async def _frames_direct(s: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    lines = []
+    for i, f in enumerate(page.frames):
+        lines.append(f"  [{i}] {f.name or '(unnamed)'} {f.url}")
+    return "Frames:\n" + "\n".join(lines) if lines else "No frames"
+
+
+@app.command()
+def frame_click(
+    ctx: typer.Context,
+    frame_index: int = typer.Option(-1, "--frame", help="Frame index (-1 = auto-detect Google iframe)"),
+    selector: str = typer.Option("button", "--selector", help="CSS selector inside frame"),
+    session: Optional[str] = typer.Option(None, "--session", help="Session name"),
+):
+    s = _req_session(ctx, session)
+    _try_daemon("/cmd/frame-click", {"session": s, "frame_index": frame_index, "selector": selector},
+                lambda: _frame_click_direct(s, frame_index, selector))
+
+
+async def _frame_click_direct(s: str, frame_index: int, selector: str):
+    page = await _get_page_with_state(s)
+    if not page:
+        return f"Error: session '{s}' not found"
+    target = None
+    if frame_index >= 0:
+        target = page.frames[frame_index]
+    else:
+        for f in page.frames:
+            if "accounts.google.com" in f.url or "gsi" in f.url:
+                target = f
+                break
+        if not target:
+            for f in page.frames:
+                if f != page.main_frame:
+                    target = f
+                    break
+    if not target:
+        return "Error: no suitable frame found"
+    await target.locator(selector).first.click(timeout=5000, force=True)
+    return f"Clicked {selector} in {target.url}"
+
+
+@app.command()
 def eval(ctx: typer.Context, js: str = typer.Argument(..., help="JavaScript to execute"),
          session: Optional[str] = typer.Option(None, "--session", help="Session name")):
     s = _req_session(ctx, session)
